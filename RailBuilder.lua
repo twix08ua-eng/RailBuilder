@@ -1,7 +1,12 @@
--- LocalScript (ВСЁ В ОДНОМ) — ФИНАЛ
+-- LocalScript (ВСЁ В ОДНОМ) — ФИНАЛ+
 -- Положи в: StarterPlayer > StarterPlayerScripts > RailBuilder
 -- Рельсы и вагонетка существуют только на твоём клиенте — другие игроки их не видят.
 -- Сохранение между заходами работает, если в игре есть серверный скрипт RailSaveServer.
+--
+-- НОВОЕ:
+--  • Высота до 30 уровней (цифра жёлтая с 15, красная на 30)
+--  • ⚡ Бустер — своя ускоряющая рельса (клавиша 6)
+--  • ↶ Отмена — отменяет последнее действие или целую цепочку (клавиша Z)
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -19,9 +24,12 @@ local SLOT_COUNT = 5
 local MAX_RAILS = 500
 local SAVE_DELAY = 3
 local RISE = 2          -- на сколько студов поднимается уклон = один уровень высоты
-local MAX_LEVEL = 15    -- максимум уровней вверх
+local MAX_LEVEL = 30    -- максимум уровней вверх (красная цифра)
+local WARN_LEVEL = 15   -- с этого уровня цифра становится жёлтой
 local CART_SPEEDS = { 8, 16, 28 }
 local CART_SPEED_NAMES = { "🐢 Медленно", "🏃 Средне", "⚡ Быстро" }
+local BOOST_MULT = 2.0  -- во сколько раз вагонетка разгоняется на бустере
+local MAX_HISTORY = 60  -- сколько действий помнит «Отмена»
 local SEAT_OFFSET = CFrame.new(0, 2.3, 0.1) -- где сидит игрок относительно вагонетки
 
 local RAMP_ANGLE = math.atan(RISE / GRID)
@@ -44,8 +52,9 @@ local C = {
 }
 local TOUCH_ONLY = UserInputService.TouchEnabled and not UserInputService.MouseEnabled
 
-local KIND_CODE = { straight = 0, curve = 1, ramp = 2 }
-local CODE_KIND = { [0] = "straight", [1] = "curve", [2] = "ramp" }
+-- коды типов для сохранения (boost = 3)
+local KIND_CODE = { straight = 0, curve = 1, ramp = 2, boost = 3 }
+local CODE_KIND = { [0] = "straight", [1] = "curve", [2] = "ramp", [3] = "boost" }
 
 -- ===== Состояние =====
 local data = nil
@@ -56,7 +65,7 @@ local saveQueued = false
 local saveState = "off" -- off / saving / saved / error
 
 local buildMode = false
-local tool = "straight" -- straight / curve / ramp / erase / cart
+local tool = "straight" -- straight / curve / ramp / boost / erase / cart
 local rotTarget, rotCurrent = 0, 0
 local level, refY = 0, 0 -- уровень высоты и высота земли для уровня 0
 local ghost, ghostKind, ghostHL
@@ -69,10 +78,13 @@ local lastInputTouch = TOUCH_ONLY
 local lastLimitToast = 0
 local slotsOpen = false
 
+local history = {}  -- стек действий для «Отмены»
+local strokeId = 0  -- номер «мазка»: цепочка при зажатой кнопке отменяется целиком
+
 local tileAt = {} -- [ "gx,gz" ] = модель рельсы
 local cart = nil
 
-local toast, removeCart, refreshCartHud, refreshPill, refreshSlots
+local toast, removeCart, refreshCartHud, refreshPill, refreshSlots, refreshUndo
 
 -- ===== Помощники =====
 local function tween(obj, t, props, style, dir)
@@ -100,6 +112,17 @@ end
 
 local function snap(v)
     return math.round(v / GRID) * GRID
+end
+
+local function pushHistory(entry)
+    entry.group = strokeId
+    history[#history + 1] = entry
+    if #history > MAX_HISTORY then
+        table.remove(history, 1)
+    end
+    if refreshUndo then
+        refreshUndo()
+    end
 end
 
 -- ===== Мир: контейнер рельс (клиентский → виден только тебе) =====
@@ -132,7 +155,8 @@ local function newPart(parent, name, size, offset, color, material, collide)
     return p
 end
 
--- kind: "straight" (прямая), "curve" (поворот на 90°), "ramp" (уклон: нижний конец -Z, верхний +Z)
+-- kind: "straight" (прямая), "curve" (поворот на 90°), "ramp" (уклон: нижний конец -Z, верхний +Z),
+--       "boost" (прямая-ускоритель с неоновыми полосами)
 local function newRailModel(kind, name)
     local model = Instance.new("Model")
     model.Name = name or "Rail"
@@ -176,6 +200,12 @@ local function newRailModel(kind, name)
     local base = newPart(model, "Base", Vector3.new(4, BASE_HEIGHT, 4), CFrame.new(0, 0, 0), gravel, Enum.Material.Pebble, true)
     model.PrimaryPart = base
 
+    if kind == "boost" then
+        -- тёмная сланцевая плита, чтобы бустер выделялся
+        base.Color = Color3.fromRGB(52, 58, 84)
+        base.Material = Enum.Material.Slate
+    end
+
     if kind == "curve" then
         -- дуга вокруг угла клетки (2, -2): соединяет сторону -Z и сторону +X
         local center = Vector3.new(2, 0, -2)
@@ -205,6 +235,13 @@ local function newRailModel(kind, name)
         end
         for _, x in ipairs({ -1.1, 1.1 }) do
             newPart(model, "Steel", Vector3.new(0.25, 0.3, 4), CFrame.new(x, 0.55, 0), steel, Enum.Material.Metal, false)
+        end
+        if kind == "boost" then
+            -- неоновая «лесенка» между шпалами
+            for _, z in ipairs({ -1, 0, 1 }) do
+                newPart(model, "Glow", Vector3.new(1.9, 0.16, 0.3), CFrame.new(0, 0.3, z),
+                    Color3.fromRGB(255, 170, 40), Enum.Material.Neon, false)
+            end
         end
     end
     return model
@@ -378,6 +415,9 @@ local function serialize()
 end
 
 local function clearRails()
+    -- сначала отцепляем подсветку, иначе она уничтожится вместе с рельсой
+    hoverRail = nil
+    hoverHL.Parent = nil
     if cart then
         removeCart()
     end
@@ -387,9 +427,11 @@ local function clearRails()
         end
     end
     table.clear(tileAt)
+    table.clear(history)
     railCount = 0
-    hoverRail = nil
-    hoverHL.Parent = nil
+    if refreshUndo then
+        refreshUndo()
+    end
 end
 
 local function loadRails(rails)
@@ -636,10 +678,15 @@ local function stepCart(dt)
     if c.wait > 0 then
         c.wait -= dt
     else
-        -- в гору медленнее, с горы быстрее
+        -- в гору медленнее, с горы быстрее; на бустере — сильный разгон
         local slope = 1 - 0.25 * (c.pitch / RAMP_ANGLE)
-        local target = c.running and CART_SPEEDS[c.speedIdx] * slope or 0
-        c.speed += (target - c.speed) * math.min(1, dt * 2.5)
+        local onBoost = c.tile:GetAttribute("Kind") == "boost"
+        local target = 0
+        if c.running then
+            target = CART_SPEEDS[c.speedIdx] * slope * (onBoost and BOOST_MULT or 1)
+        end
+        local rate = (onBoost and target > c.speed) and 7 or 2.5
+        c.speed += (target - c.speed) * math.min(1, dt * rate)
         if not c.running and c.speed < 0.1 then
             c.speed = 0
         end
@@ -856,7 +903,7 @@ make("UIListLayout", {
 }, dock)
 
 local function dockButton(parent, icon, text, order)
-    local b = button(parent, { Size = UDim2.fromOffset(66, 62), LayoutOrder = order }, C.card)
+    local b = button(parent, { Size = UDim2.fromOffset(64, 62), LayoutOrder = order }, C.card)
     stroke(b, C.accent, 2, 1)
     local ic = label(b, { Size = UDim2.new(1, 0, 0, 32), Position = UDim2.fromOffset(0, 5), Font = Enum.Font.GothamBold, TextSize = 24, Text = icon })
     local lb = label(b, { Size = UDim2.new(1, 0, 0, 16), Position = UDim2.new(0, 0, 1, -21), TextSize = 11, TextColor3 = C.sub, Text = text })
@@ -883,12 +930,20 @@ local toolBtns = {}
 toolBtns.straight = dockButton(tools, "➖", "Прямая", 1)
 toolBtns.curve = dockButton(tools, "↪", "Поворот", 2)
 toolBtns.ramp = dockButton(tools, "📐", "Уклон", 3)
-toolBtns.erase = dockButton(tools, "❌", "Стереть", 4)
-toolBtns.cart = dockButton(tools, "🚃", "Вагонетка", 5)
-local rotateBtn = dockButton(tools, "↻", "Повернуть", 6)
-local actionBtn, actionIcon, actionLbl = dockButton(tools, "✔", "Поставить", 7)
+toolBtns.boost = dockButton(tools, "⚡", "Бустер", 4)
+toolBtns.erase = dockButton(tools, "❌", "Стереть", 5)
+toolBtns.cart = dockButton(tools, "🚃", "Вагонетка", 6)
+local rotateBtn = dockButton(tools, "↻", "Повернуть", 7)
+local undoBtn, undoIcon = dockButton(tools, "↶", "Отмена", 8)
+local actionBtn, actionIcon, actionLbl = dockButton(tools, "✔", "Поставить", 9)
 setBase(actionBtn, C.goodDark)
 actionBtn.Visible = UserInputService.TouchEnabled
+
+refreshUndo = function()
+    -- иконка тусклая, пока отменять нечего
+    undoIcon.TextTransparency = (#history == 0) and 0.65 or 0
+end
+refreshUndo()
 
 local hint = make("TextLabel", {
     AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -106),
@@ -899,15 +954,18 @@ local hint = make("TextLabel", {
 corner(hint, 12)
 pad(hint, 7, 14)
 
+local UNDO_HINT = TOUCH_ONLY and "" or "  ·  Z — отмена"
 local HINTS = {
-    straight = TOUCH_ONLY and "Тапни место → «Поставить»  ·  ▲▼ — высота" or "ЛКМ — поставить  ·  зажми и веди — цепочка  ·  R — повернуть  ·  E / Q — выше / ниже",
-    curve = TOUCH_ONLY and "Тапни место → «Поставить»  ·  поворот соединяет две соседние стороны" or "ЛКМ — поставить поворот  ·  R — повернуть  ·  E / Q — выше / ниже",
-    ramp = TOUCH_ONLY and "Уклон: нижний конец на текущей высоте. Подъём: ▲ после постановки" or "Уклон: нижний конец — на текущей высоте  ·  R — повернуть  ·  E / Q — выше / ниже",
-    erase = TOUCH_ONLY and "Тапни рельсу → «Удалить»" or "Наведи на рельсу и нажми ЛКМ  ·  зажми и води — стирать подряд",
+    straight = TOUCH_ONLY and "Тапни место → «Поставить»  ·  ▲▼ — высота" or ("ЛКМ — поставить  ·  зажми и веди — цепочка  ·  R — повернуть  ·  E / Q — выше / ниже" .. UNDO_HINT),
+    curve = TOUCH_ONLY and "Тапни место → «Поставить»  ·  поворот соединяет две соседние стороны" or ("ЛКМ — поставить поворот  ·  R — повернуть  ·  E / Q — выше / ниже" .. UNDO_HINT),
+    ramp = TOUCH_ONLY and "Уклон: нижний конец на текущей высоте. Подъём: ▲ после постановки" or ("Уклон: нижний конец — на текущей высоте  ·  R — повернуть  ·  E / Q — выше / ниже" .. UNDO_HINT),
+    boost = TOUCH_ONLY and "Тапни место → «Поставить»  ·  вагонетка разгоняется ⚡" or ("ЛКМ — поставить бустер  ·  вагонетка разгоняется ×" .. BOOST_MULT .. "  ·  R — повернуть  ·  E / Q — выше / ниже" .. UNDO_HINT),
+    erase = TOUCH_ONLY and "Тапни рельсу → «Удалить»" or ("Наведи на рельсу и нажми ЛКМ  ·  зажми и води — стирать подряд" .. UNDO_HINT),
     cart = TOUCH_ONLY and "Тапни рельсу → «Поставить» вагонетку" or "Нажми на рельсу, чтобы поставить на неё вагонетку",
 }
 local ACTIONS = {
     straight = { "✔", "Поставить" }, curve = { "✔", "Поставить" }, ramp = { "✔", "Поставить" },
+    boost = { "✔", "Поставить" },
     erase = { "🗑", "Удалить" }, cart = { "🚃", "Поставить" },
 }
 
@@ -1205,7 +1263,7 @@ end)
 
 -- ===== Призрак, подсветка под курсором, действия =====
 local function isPlacing(t)
-    return t == "straight" or t == "curve" or t == "ramp"
+    return t == "straight" or t == "curve" or t == "ramp" or t == "boost"
 end
 
 local function destroyGhost()
@@ -1329,6 +1387,9 @@ local function doAction(fromHold)
     if not buildMode or busy then
         return
     end
+    if not fromHold then
+        strokeId += 1 -- новый клик = новая группа для «Отмены»
+    end
     if tool == "erase" then
         if not hoverRail then
             return
@@ -1336,6 +1397,13 @@ local function doAction(fromHold)
         local r = hoverRail
         hoverRail = nil
         hoverHL.Parent = nil
+        local p = r:GetAttribute("Pos")
+        if p then
+            pushHistory({
+                act = "erase", x = p.X, y = p.Y, z = p.Z,
+                rot = r:GetAttribute("Rot") or 0, rkind = r:GetAttribute("Kind") or "straight",
+            })
+        end
         removeRail(r)
         markDirty()
         onRailsChanged()
@@ -1357,14 +1425,62 @@ local function doAction(fromHold)
         end
         local p = ghostCF.Position
         spawnRail(p.X, round2(p.Y), p.Z, rotTarget % 360, tool, true)
+        pushHistory({ act = "place", x = p.X, z = p.Z })
         ghostValid = false
         markDirty()
         onRailsChanged()
     end
 end
 
+-- ↶ Отмена: откатывает последнее действие (или всю цепочку, поставленную одним зажатием)
+local function undo()
+    if not buildMode or busy then
+        return
+    end
+    if #history == 0 then
+        toast("↶ Нечего отменять", C.sub)
+        return
+    end
+    -- отцепляем подсветку, чтобы она не пропала вместе с рельсой
+    hoverRail = nil
+    hoverHL.Parent = nil
+
+    local group = history[#history].group
+    local n = 0
+    while #history > 0 and history[#history].group == group do
+        local e = table.remove(history)
+        if e.act == "place" then
+            local m = tileAt[cellKey(e.x, e.z)]
+            if m then
+                removeRail(m)
+                n += 1
+            end
+        elseif e.act == "erase" then
+            if railCount < MAX_RAILS and not tileAt[cellKey(e.x, e.z)] then
+                spawnRail(e.x, e.y, e.z, e.rot, e.rkind, true)
+                n += 1
+            end
+        end
+    end
+    refreshUndo()
+    if n > 0 then
+        markDirty()
+        onRailsChanged()
+        toast(n == 1 and "↶ Отменено" or ("↶ Отменено рельс: " .. n), C.accent)
+    end
+end
+
 local function rotate(dir)
     rotTarget += 90 * dir
+end
+
+local function levelColor(n)
+    if n >= MAX_LEVEL then
+        return C.bad   -- максимум — красный
+    elseif n >= WARN_LEVEL then
+        return C.warn  -- высоко — жёлтый
+    end
+    return C.text
 end
 
 local function setLevel(n)
@@ -1374,6 +1490,7 @@ local function setLevel(n)
     end
     level = n
     hLabel.Text = tostring(level)
+    tween(hLabel, 0.15, { TextColor3 = levelColor(level) })
 end
 
 local function sampleRefY()
@@ -1446,6 +1563,9 @@ end
 rotateBtn.Activated:Connect(function()
     rotate(1)
 end)
+undoBtn.Activated:Connect(function()
+    undo()
+end)
 actionBtn.Activated:Connect(function()
     doAction(false)
 end)
@@ -1466,6 +1586,7 @@ local TOOL_KEYS = {
     [Enum.KeyCode.Three] = "ramp",
     [Enum.KeyCode.Four] = "erase",
     [Enum.KeyCode.Five] = "cart",
+    [Enum.KeyCode.Six] = "boost",
 }
 
 UserInputService.LastInputTypeChanged:Connect(function(t)
@@ -1499,6 +1620,10 @@ UserInputService.InputBegan:Connect(function(input, processed)
     elseif input.KeyCode == Enum.KeyCode.G then
         if buildMode and isPlacing(tool) then
             setLevel(0)
+        end
+    elseif input.KeyCode == Enum.KeyCode.Z then
+        if buildMode then
+            undo()
         end
     elseif input.KeyCode == Enum.KeyCode.B then
         if data then
