@@ -1,7 +1,17 @@
--- LocalScript (ВСЁ В ОДНОМ) — ФИНАЛ + ТАБЛИЧКИ
+-- LocalScript (ВСЁ В ОДНОМ) — ФИНАЛ + ТАБЛИЧКИ + СВОБОДНЫЙ РЕЖИМ
 -- Положи в: StarterPlayer > StarterPlayerScripts > RailBuilder
 -- Рельсы, таблички и вагонетка существуют только на твоём клиенте — другие игроки их не видят.
 -- Сохранение между заходами работает, если в игре есть серверный скрипт RailSaveServer.
+--
+-- СВОБОДНЫЙ РЕЖИМ — переключатель как на iPhone (слева сверху в режиме строительства, или клавиша F).
+-- Когда он включён, правил нет: рельсы ставятся где угодно и под любым углом, без сетки,
+-- без «одна рельса на клетку», высота — с шагом в 1 стад.
+--   R — повернуть · T — наклон · Y — крен (Shift — в обратную сторону) · N — шаг угла (90° / 45° / 15°)
+--   M — магнит (рельса прилипает к свободному концу другой рельсы и стыкуется с ней)
+--   V — зеркально (поставить рельсу другой стороной) · E / Q — выше / ниже · 8 — инструмент «Петля»
+-- Вагонетка ездит по любым состыкованным путям, в том числе вверх ногами в верхней точке петли.
+-- Для сохранения серверный скрипт должен хранить записи рельс целиком
+-- (у свободных рельс в записи до 9 значений, у обычных — как раньше).
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -27,6 +37,19 @@ local SIGN_MAX_CHARS = 80   -- максимум символов на табли
 local SIGN_MAX_LINES = 4    -- максимум строк на табличке
 local SIGN_DEFAULT = "Привет!"
 
+-- настройки свободного режима
+local FCFG = {
+	GRID = 1,                -- шаг привязки по горизонтали (студы)
+	STEP = 1,                -- на сколько студов поднимает один шаг высоты
+	MAX_LEVEL = 400,         -- максимум шагов высоты
+	ANGLES = { 90, 45, 15 }, -- шаги поворота / наклона / крена (градусы), кнопка «Шаг»
+	MAGNET = 3,              -- «липкость» магнита (студы)
+	LOOP_RADIUS = 9,         -- радиус мёртвой петли
+	LOOP_SHIFT = 4,          -- на сколько выезд из петли сдвинут вбок (чтобы не врезаться во въезд)
+	LOOP_SEGMENTS = 36,      -- из скольких кусочков собрана петля
+	END_TOL = 1.25,          -- насколько близко концы рельс должны быть друг к другу, чтобы вагонетка переехала
+}
+
 local RAMP_ANGLE = math.atan(RISE / GRID)
 local RAMP_LEN = math.sqrt(GRID * GRID + RISE * RISE)
 
@@ -44,11 +67,13 @@ local C = {
 	warn = Color3.fromRGB(255, 205, 90),
 	text = Color3.fromRGB(240, 244, 255),
 	sub = Color3.fromRGB(148, 156, 184),
+	swOn = Color3.fromRGB(52, 199, 89),  -- зелёный, как у переключателя на iPhone
+	swOff = Color3.fromRGB(72, 76, 100),
 }
 local TOUCH_ONLY = UserInputService.TouchEnabled and not UserInputService.MouseEnabled
 
-local KIND_CODE = { straight = 0, curve = 1, ramp = 2, sign = 3 }
-local CODE_KIND = { [0] = "straight", [1] = "curve", [2] = "ramp", [3] = "sign" }
+local KIND_CODE = { straight = 0, curve = 1, ramp = 2, sign = 3, loop = 4 }
+local CODE_KIND = { [0] = "straight", [1] = "curve", [2] = "ramp", [3] = "sign", [4] = "loop" }
 
 -- ===== Состояние =====
 local data = nil
@@ -59,11 +84,11 @@ local saveQueued = false
 local saveState = "off" -- off / saving / saved / error
 
 local buildMode = false
-local tool = "straight" -- straight / curve / ramp / sign / edit / erase / cart
-local rotTarget, rotCurrent = 0, 0
+local tool = "straight" -- straight / curve / ramp / loop / sign / edit / erase / cart
+local rotTarget = 0
 local level, refY = 0, 0 -- уровень высоты и высота земли для уровня 0
 local ghost, ghostKind, ghostHL
-local ghostPos, ghostCF
+local ghostShown, ghostCF -- ghostShown — где призрак нарисован сейчас, ghostCF — куда реально встанет рельса
 local ghostValid = false
 local hoverRail
 local holding = false
@@ -73,7 +98,32 @@ local lastLimitToast = 0
 local slotsOpen = false
 local signText = SIGN_DEFAULT -- текст, который ставится на новые таблички
 
-local tileAt = {} -- [ "gx,gz" ] = модель рельсы / таблички
+-- свободный режим: все его переменные собраны в одну таблицу
+local FM = {
+	on = false,          -- переключатель включён
+	magnet = true,       -- магнит: прилипание к свободным концам других рельс
+	flip = false,        -- «сторона»: рельса прикладывается концом, а не началом
+	angle = 1,           -- номер шага угла в FCFG.ANGLES
+	snapped = false,     -- призрак сейчас прилип к концу рельсы
+	pitch = 0, roll = 0, -- наклон и крен «в воздухе» (поворот вокруг вертикали — это rotTarget)
+	rel = { yaw = 0, pitch = 0, roll = 0 }, -- повороты относительно конца рельсы, к которому прилип призрак
+}
+
+function FM.wrap(v)
+	return ((v + 180) % 360) - 180
+end
+
+function FM.levelStep() -- на сколько студов поднимается один «уровень» высоты
+	return FM.on and FCFG.STEP or RISE
+end
+
+function FM.stepAngle()
+	return FCFG.ANGLES[FM.angle]
+end
+
+local tileAt = {} -- [ "gx,gz" ] = модель рельсы / таблички (только обычный режим)
+local pieces = {} -- [модель] = данные о пути рельсы / таблички
+local eps = {}    -- концы всех рельс (для магнита и для переезда вагонетки)
 local cart = nil
 
 local toast, removeCart, refreshCartHud, refreshPill, refreshSlots
@@ -95,15 +145,21 @@ local function make(class, props, parent)
 end
 
 local function round2(v)
-	return math.round(v * 100) / 100
+	local r = math.round(v * 100) / 100
+	if r ~= r then
+		return 0
+	end
+	return r
 end
 
 local function cellKey(x, z)
 	return (math.round(x / GRID) + 0) .. "," .. (math.round(z / GRID) + 0)
 end
 
+-- привязка к сетке: 4 студа в обычном режиме, 1 студ в свободном
 local function snap(v)
-	return math.round(v / GRID) * GRID
+	local g = FM.on and FCFG.GRID or GRID
+	return math.round(v / g) * g
 end
 
 -- «5 объектов», «1 объект», «2 объекта»
@@ -165,6 +221,115 @@ hoverParams.FilterDescendantsInstances = { railsFolder }
 local supportParams = RaycastParams.new()
 supportParams.FilterType = Enum.RaycastFilterType.Exclude
 
+-- ===== Геометрия путей =====
+-- У каждой рельсы есть «путь»: точки вдоль её центра, направление движения в каждой точке
+-- и «верх» пути (куда смотрит крыша вагонетки). Всё это — в системе координат самой рельсы.
+local Geo = {}
+do
+	local Y_UP = Vector3.new(0, 1, 0)
+	local dataCache, frameCache = {}, {}
+
+	-- точка петли в системе координат рельсы (вход — в нуле, едем вдоль +Z);
+	-- сдвиг вбок плавный, поэтому и вход, и выход идут строго прямо
+	local function loopPoint(theta)
+		local R = FCFG.LOOP_RADIUS
+		local t = theta / (2 * math.pi)
+		local sm = t * t * (3 - 2 * t)
+		local dsm = 6 * t * (1 - t)
+		local pos = Vector3.new(FCFG.LOOP_SHIFT * sm, R * (1 - math.cos(theta)), R * math.sin(theta))
+		local d = Vector3.new(FCFG.LOOP_SHIFT * dsm / (2 * math.pi), R * math.sin(theta), R * math.cos(theta))
+		local tan = d.Unit
+		local upc = Vector3.new(0, math.cos(theta), -math.sin(theta)) -- «верх» смотрит в центр круга
+		return pos, tan, (upc - tan * upc:Dot(tan)).Unit
+	end
+
+	-- система координат «стыка»: Z — вперёд по пути, Y — «верх»
+	function Geo.frameCF(pos, fwd, up)
+		local z = fwd.Unit
+		local x = up:Cross(z).Unit
+		local y = z:Cross(x)
+		return CFrame.fromMatrix(pos, x, y, z)
+	end
+
+	-- путь рельсы: pts — точки, tans — направление, ups — «верх»;
+	-- sDir/sUp и eDir/eUp — направление и «верх» на стыках (у уклона стыки плоские)
+	function Geo.localData(kind)
+		local cached = dataCache[kind]
+		if cached then
+			return cached
+		end
+		local pts, tans, ups = {}, {}, {}
+		local h = GRID / 2
+		if kind == "curve" then
+			local n = 12
+			local center = Vector3.new(h, 0, -h)
+			for k = 0, n do
+				local phi = k / n * math.pi / 2
+				pts[k + 1] = center + Vector3.new(-math.cos(phi), 0, math.sin(phi)) * h
+				tans[k + 1] = Vector3.new(math.sin(phi), 0, math.cos(phi))
+				ups[k + 1] = Y_UP
+			end
+		elseif kind == "ramp" then
+			local tan = Vector3.new(0, math.sin(RAMP_ANGLE), math.cos(RAMP_ANGLE))
+			local up = Vector3.new(0, math.cos(RAMP_ANGLE), -math.sin(RAMP_ANGLE))
+			pts = { Vector3.new(0, 0, -h), Vector3.new(0, RISE, h) }
+			tans = { tan, tan }
+			ups = { up, up }
+		elseif kind == "loop" then
+			for k = 0, FCFG.LOOP_SEGMENTS do
+				pts[k + 1], tans[k + 1], ups[k + 1] = loopPoint(k / FCFG.LOOP_SEGMENTS * 2 * math.pi)
+			end
+		else -- straight
+			pts = { Vector3.new(0, 0, -h), Vector3.new(0, 0, h) }
+			tans = { Vector3.new(0, 0, 1), Vector3.new(0, 0, 1) }
+			ups = { Y_UP, Y_UP }
+		end
+		local n = #pts
+		cached = {
+			pts = pts, tans = tans, ups = ups,
+			sDir = tans[1], sUp = ups[1], eDir = tans[n], eUp = ups[n],
+		}
+		if kind == "ramp" then
+			cached.sDir, cached.sUp = Vector3.new(0, 0, 1), Y_UP
+			cached.eDir, cached.eUp = Vector3.new(0, 0, 1), Y_UP
+		end
+		dataCache[kind] = cached
+		return cached
+	end
+
+	-- системы координат начала (s) и конца (e) рельсы — по ним рельса стыкуется с другой
+	function Geo.localFrames(kind)
+		local cached = frameCache[kind]
+		if cached then
+			return cached
+		end
+		local d = Geo.localData(kind)
+		local n = #d.pts
+		cached = {
+			s = Geo.frameCF(d.pts[1], d.sDir, d.sUp),
+			e = Geo.frameCF(d.pts[n], d.eDir, d.eUp),
+		}
+		frameCache[kind] = cached
+		return cached
+	end
+
+	-- положение рельсы: yaw — вокруг вертикали, pitch и roll — «сырые» углы Эйлера (порядок Y, X, Z)
+	function Geo.pieceCF(x, y, z, yaw, pitch, roll)
+		return CFrame.new(x, y, z) * CFrame.fromEulerAnglesYXZ(math.rad(pitch), math.rad(yaw), math.rad(roll))
+	end
+
+	-- повороты, которые задаёт игрок: yaw — вокруг вертикали, pitchUp — наклон носом вверх, roll — крен
+	function Geo.oriCF(yaw, pitchUp, roll)
+		return CFrame.fromEulerAnglesYXZ(math.rad(-pitchUp), math.rad(yaw), math.rad(roll))
+	end
+
+	-- обратно: из CFrame в x, y, z, yaw, pitch, roll (то, что хранится в атрибутах и в сохранении)
+	function Geo.decompose(cf)
+		local rx, ry, rz = cf:ToEulerAnglesYXZ()
+		return cf.X, cf.Y, cf.Z, math.deg(ry), math.deg(rx), math.deg(rz)
+	end
+end
+
 -- ===== Модели =====
 local function newPart(parent, name, size, offset, color, material, collide)
 	local p = Instance.new("Part")
@@ -183,7 +348,8 @@ local function newPart(parent, name, size, offset, color, material, collide)
 end
 
 -- kind: "straight" (прямая), "curve" (поворот на 90°), "ramp" (уклон: нижний конец -Z, верхний +Z),
---       "sign" (деревянная табличка: лицевая сторона смотрит в -Z, текст есть и сзади)
+--       "sign" (деревянная табличка: лицевая сторона смотрит в -Z, текст есть и сзади),
+--       "loop" (мёртвая петля: вход в нуле, едем вдоль +Z, выезд сдвинут вбок на LOOP_SHIFT)
 local function newRailModel(kind, name)
 	local model = Instance.new("Model")
 	model.Name = name or "Rail"
@@ -259,6 +425,33 @@ local function newRailModel(kind, name)
 				Text = "",
 			}, sg)
 			make("UITextSizeConstraint", { MaxTextSize = 64, MinTextSize = 8 }, tl)
+		end
+		return model
+	end
+
+	if kind == "loop" then
+		-- кольцо из коротких кусочков пути: плита, два рельса и шпалы; крыша вагонетки смотрит в центр круга
+		local origin = newPart(model, "Origin", Vector3.new(0.2, 0.2, 0.2), CFrame.new(0, 0, 0), wood, Enum.Material.Wood, false)
+		origin.Transparency = 1
+		origin.CanQuery = false
+		model.PrimaryPart = origin
+
+		local d = Geo.localData("loop")
+		for i = 1, #d.pts - 1 do
+			local a, b = d.pts[i], d.pts[i + 1]
+			local dir = b - a
+			local len = dir.Magnitude
+			local mid = (a + b) / 2
+			local seg = CFrame.lookAt(mid, mid + dir, d.ups[i] + d.ups[i + 1])
+			newPart(model, "Base", Vector3.new(3.6, BASE_HEIGHT, len + 0.12), seg, gravel, Enum.Material.Pebble, true)
+			for _, x in ipairs({ -1.1, 1.1 }) do
+				newPart(model, "Steel", Vector3.new(0.25, 0.3, len + 0.1), seg * CFrame.new(x, 0.55, 0),
+					steel, Enum.Material.Metal, false)
+			end
+			if i % 2 == 1 then
+				newPart(model, "Sleeper", Vector3.new(3.4, 0.2, 0.5), seg * CFrame.new(0, 0.3, 0),
+					wood, Enum.Material.Wood, false)
+			end
 		end
 		return model
 	end
@@ -420,11 +613,48 @@ local function dropIn(m, cf)
 	end)
 end
 
-local function spawnRail(x, y, z, rot, kind, animate, text)
+-- заносим рельсу в списки: путь (по нему ездит вагонетка) и концы (для магнита и для переезда)
+local function registerPiece(m, kind, cf)
+	local info = { model = m, kind = kind, cf = cf }
+	if kind ~= "sign" then
+		local d = Geo.localData(kind)
+		local pts, tans, ups, cum = {}, {}, {}, { 0 }
+		for i, pt in ipairs(d.pts) do
+			pts[i] = cf * pt
+			tans[i] = cf:VectorToWorldSpace(d.tans[i])
+			ups[i] = cf:VectorToWorldSpace(d.ups[i])
+			if i > 1 then
+				cum[i] = cum[i - 1] + (pts[i] - pts[i - 1]).Magnitude
+			end
+		end
+		local n = #pts
+		info.pts, info.tans, info.ups, info.cum, info.len = pts, tans, ups, cum, cum[n]
+		-- dir у конца — куда смотрит «продолжение» рельсы (наружу от неё)
+		eps[#eps + 1] = {
+			pos = pts[1], dir = cf:VectorToWorldSpace(-d.sDir), up = cf:VectorToWorldSpace(d.sUp),
+			info = info, which = 1,
+		}
+		eps[#eps + 1] = {
+			pos = pts[n], dir = cf:VectorToWorldSpace(d.eDir), up = cf:VectorToWorldSpace(d.eUp),
+			info = info, which = 2,
+		}
+	end
+	pieces[m] = info
+	return info
+end
+
+-- yaw — поворот вокруг вертикали (у обычных рельс 0 / 90 / 180 / 270), pitch и roll — наклон и крен (у обычных 0);
+-- free = true — свободная рельса (не привязана к клетке сетки)
+local function spawnPiece(kind, x, y, z, yaw, pitch, roll, free, animate, text)
 	local m = newRailModel(kind, "Rail")
-	addSupport(m, x, y, z)
-	local cf = CFrame.new(x, y, z) * CFrame.Angles(0, math.rad(rot), 0)
-	m:SetAttribute("Rot", rot)
+	local cf = Geo.pieceCF(x, y, z, yaw, pitch, roll)
+	if kind ~= "loop" and math.abs(pitch) < 0.5 and math.abs(roll) < 0.5 then
+		addSupport(m, x, y, z) -- опора до земли — только под ровными рельсами
+	end
+	m:SetAttribute("Rot", yaw)
+	m:SetAttribute("Pitch", pitch)
+	m:SetAttribute("Roll", roll)
+	m:SetAttribute("Free", free)
 	m:SetAttribute("Kind", kind)
 	m:SetAttribute("Pos", Vector3.new(x, y, z))
 	if kind == "sign" then
@@ -432,7 +662,10 @@ local function spawnRail(x, y, z, rot, kind, animate, text)
 	end
 	m:PivotTo(cf)
 	m.Parent = railsFolder
-	tileAt[cellKey(x, z)] = m
+	registerPiece(m, kind, cf)
+	if not free then
+		tileAt[cellKey(x, z)] = m
+	end
 	railCount += 1
 	if animate then
 		dropIn(m, cf)
@@ -449,6 +682,15 @@ local function removeRail(m)
 			tileAt[k] = nil
 		end
 	end
+	local info = pieces[m]
+	if info then
+		for i = #eps, 1, -1 do
+			if eps[i].info == info then
+				table.remove(eps, i)
+			end
+		end
+		pieces[m] = nil
+	end
 	m:Destroy()
 	railCount -= 1
 end
@@ -462,11 +704,18 @@ local function serialize()
 				local kind = m:GetAttribute("Kind")
 				local entry = {
 					round2(p.X), round2(p.Y), round2(p.Z),
-					m:GetAttribute("Rot") or 0,
+					round2(m:GetAttribute("Rot") or 0),
 					KIND_CODE[kind] or 0,
 				}
 				if kind == "sign" then
 					entry[6] = m:GetAttribute("Text") or "" -- текст таблички
+				end
+				if m:GetAttribute("Free") == true then
+					-- свободная рельса: ещё наклон, крен и метка «свободная»
+					entry[6] = entry[6] or 0
+					entry[7] = round2(m:GetAttribute("Pitch") or 0)
+					entry[8] = round2(m:GetAttribute("Roll") or 0)
+					entry[9] = 1
 				end
 				out[#out + 1] = entry
 			end
@@ -485,6 +734,8 @@ local function clearRails()
 		end
 	end
 	table.clear(tileAt)
+	table.clear(pieces)
+	table.clear(eps)
 	railCount = 0
 	hoverRail = nil
 	hoverHL.Parent = nil
@@ -495,11 +746,15 @@ local function loadRails(rails)
 		if type(r) == "table"
 			and type(r[1]) == "number" and type(r[2]) == "number"
 			and type(r[3]) == "number" and type(r[4]) == "number"
-			and railCount < MAX_RAILS
-			and not tileAt[cellKey(r[1], r[3])] then
-			local kind = CODE_KIND[r[5]] or "straight"
-			local text = (kind == "sign" and type(r[6]) == "string") and cleanSignText(r[6]) or nil
-			spawnRail(r[1], r[2], r[3], r[4], kind, false, text)
+			and railCount < MAX_RAILS then
+			local free = (r[9] == 1)
+			if free or not tileAt[cellKey(r[1], r[3])] then
+				local kind = CODE_KIND[r[5]] or "straight"
+				local text = (kind == "sign" and type(r[6]) == "string") and cleanSignText(r[6]) or nil
+				local pitch = (free and type(r[7]) == "number") and r[7] or 0
+				local roll = (free and type(r[8]) == "number") and r[8] or 0
+				spawnPiece(kind, r[1], r[2], r[3], r[4], pitch, roll, free, false, text)
+			end
 		end
 		if i % 40 == 0 then
 			task.wait()
@@ -564,113 +819,100 @@ local function markDirty()
 end
 
 -- ===== Вагонетка: логика =====
--- У каждой рельсы два «порта» — направления на соседние клетки.
--- Для уклона первый порт — НИЖНИЙ конец, второй — верхний.
-local function tilePorts(tile)
-	local rot = tile:GetAttribute("Rot") or 0
-	local cf = CFrame.Angles(0, math.rad(rot), 0)
-	local a = Vector3.new(0, 0, -1)
-	local b = (tile:GetAttribute("Kind") == "curve") and Vector3.new(1, 0, 0) or Vector3.new(0, 0, 1)
-	local function w(v)
-		local r = cf:VectorToWorldSpace(v)
-		return Vector3.new(math.round(r.X), 0, math.round(r.Z))
+-- Вагонетка едет по «пути» рельсы. Когда путь кончается, она ищет рядом конец другой рельсы
+-- (подходящий и по месту, и по направлению) и переезжает на неё. Так одинаково работают
+-- обычные рельсы, свободные рельсы и мёртвые петли.
+
+-- точка пути на расстоянии s от начала рельсы: позиция, направление и «верх»
+function Geo.samplePath(info, s)
+	local pts, cum = info.pts, info.cum
+	local n = #pts
+	s = math.clamp(s, 0, info.len)
+	local i = 1
+	while i < n - 1 and cum[i + 1] < s do
+		i += 1
 	end
-	return w(a), w(b)
+	local a, b = cum[i], cum[i + 1]
+	local f = (b > a) and (s - a) / (b - a) or 0
+	local pos = pts[i]:Lerp(pts[i + 1], f)
+	local tan = info.tans[i]:Lerp(info.tans[i + 1], f)
+	local up = info.ups[i]:Lerp(info.ups[i + 1], f)
+	return pos, tan.Unit, up
 end
 
-local function tileLength(tile)
-	local kind = tile:GetAttribute("Kind")
-	if kind == "curve" then
-		return math.pi
-	elseif kind == "ramp" then
-		return RAMP_LEN
-	end
-	return GRID
-end
-
--- высота центральной линии рельсы на краю клетки (в сторону dir)
-local function edgeY(tile, dir)
-	local y = tile:GetAttribute("Pos").Y
-	if tile:GetAttribute("Kind") == "ramp" then
-		local low = tilePorts(tile)
-		if dir ~= low then
-			y += RISE
+-- поворот вагонетки: нос — по движению, крыша — к «верху» пути (на петле это может быть вниз)
+function Geo.frameFrom(heading, up)
+	local back = -heading
+	local right = up:Cross(back)
+	if right.Magnitude < 1e-4 then
+		right = Vector3.new(1, 0, 0):Cross(back)
+		if right.Magnitude < 1e-4 then
+			right = Vector3.new(0, 0, 1):Cross(back)
 		end
 	end
-	return y
+	right = right.Unit
+	return CFrame.fromMatrix(Vector3.zero, right, back:Cross(right), back)
 end
 
--- позиция, направление и наклон на рельсе (u от 0 до 1)
-local function pathPoint(tile, entry, exit, u)
-	local c = tile:GetAttribute("Pos")
-	local kind = tile:GetAttribute("Kind")
-	if kind == "curve" then
-		local corner = c + (entry + exit) * 2
-		local phi = u * math.pi / 2
-		local pos = corner - (exit * math.cos(phi) + entry * math.sin(phi)) * 2
-		local heading = exit * math.sin(phi) - entry * math.cos(phi)
-		return pos, heading, 0
-	end
-	local p = (c + entry * 2):Lerp(c + exit * 2, u)
-	if kind == "ramp" then
-		local low = tilePorts(tile)
-		local rising = (entry == low)
-		local t = rising and u or (1 - u)
-		return Vector3.new(p.X, c.Y + RISE * t, p.Z), exit, rising and RAMP_ANGLE or -RAMP_ANGLE
-	end
-	return p, exit, 0
-end
-
-local function advanceTile()
-	local c = cart.tile:GetAttribute("Pos")
-	local nt = tileAt[cellKey(c.X + cart.exit.X * GRID, c.Z + cart.exit.Z * GRID)]
-	-- табличка — не рельса, вагонетка на неё не заедет
-	if not nt or nt.Parent ~= railsFolder or nt:GetAttribute("Kind") == "sign" then
-		return false
-	end
-	local a, b = tilePorts(nt)
-	local back = -cart.exit
-	local newEntry, newExit
-	if a == back then
-		newEntry, newExit = a, b
-	elseif b == back then
-		newEntry, newExit = b, a
+-- переезд на следующую рельсу; false — дальше пути нет
+local function advanceCart(c)
+	local info = c.info
+	local pos, tan
+	if c.dir > 0 then
+		pos, tan = info.pts[#info.pts], info.tans[#info.tans]
 	else
+		pos, tan = info.pts[1], -info.tans[1]
+	end
+	local best, bestD
+	for _, ep in ipairs(eps) do
+		if ep.info ~= info then
+			local d = (ep.pos - pos).Magnitude
+			if d < FCFG.END_TOL and (not bestD or d < bestD) and tan:Dot(ep.dir) < -0.5 then
+				best, bestD = ep, d
+			end
+		end
+	end
+	if not best then
 		return false
 	end
-	-- высоты на стыке должны совпадать, иначе путь «оборван»
-	if math.abs(edgeY(cart.tile, cart.exit) - edgeY(nt, newEntry)) > 0.35 then
-		return false
+	c.gap += pos - best.pos -- если концы чуть не совпали, вагонетка «доезжает» плавно, без рывка
+	c.info = best.info
+	if best.which == 1 then
+		c.dir, c.s = 1, 0
+	else
+		c.dir, c.s = -1, best.info.len
 	end
-	cart.tile, cart.entry, cart.exit, cart.u = nt, newEntry, newExit, 0
-	cart.len = tileLength(nt)
 	return true
 end
 
 local function spawnCart(tile)
+	local info = pieces[tile]
+	if not info or not info.pts then
+		return
+	end
 	if cart then
 		removeCart()
 	end
-	local a, b = tilePorts(tile)
+	local s = info.len / 2
+	local pos, tan, up = Geo.samplePath(info, s)
+	-- едем туда, куда смотрит камера
 	local look = camera.CFrame.LookVector
-	local flat = Vector3.new(look.X, 0, look.Z)
-	local exit, entry = a, b
-	if b:Dot(flat) > a:Dot(flat) then
-		exit, entry = b, a
+	local d = Vector3.new(tan.X, 0, tan.Z):Dot(Vector3.new(look.X, 0, look.Z))
+	if math.abs(d) < 1e-3 then
+		d = tan:Dot(look)
 	end
+	local dir = (d >= 0) and 1 or -1
 
 	local model = newCartModel()
 	model.Parent = workspace
-	local u = 0.5
-	local pos, heading, pitch = pathPoint(tile, entry, exit, u)
-	local yaw = math.atan2(-heading.X, -heading.Z)
-	local cf = CFrame.new(pos) * CFrame.Angles(0, yaw, 0) * CFrame.Angles(pitch, 0, 0) * CFrame.new(0, 0.7, 0)
+	local rot = Geo.frameFrom(tan * dir, up)
+	local cf = CFrame.new(pos) * rot * CFrame.new(0, 0.7, 0)
 	model:PivotTo(cf)
 
 	cart = {
-		model = model, tile = tile, entry = entry, exit = exit, u = u,
-		len = tileLength(tile), speed = 0, running = false, speedIdx = 2,
-		yaw = yaw, pitch = pitch, wait = 0, riding = false, cf = cf,
+		model = model, info = info, dir = dir, s = s,
+		speed = 0, running = false, speedIdx = 2, wait = 0, riding = false,
+		cf = cf, lastRot = rot, kink = CFrame.new(), gap = Vector3.zero, rebase = false,
 	}
 	flashRail(model, C.warn)
 	refreshCartHud()
@@ -729,7 +971,7 @@ local function stepCart(dt)
 	if not c then
 		return
 	end
-	if c.tile.Parent ~= railsFolder then
+	if c.info.model.Parent ~= railsFolder then
 		removeCart("🚃 Вагонетка слетела — рельсу убрали")
 		return
 	end
@@ -737,10 +979,12 @@ local function stepCart(dt)
 	if c.wait > 0 then
 		c.wait -= dt
 	else
-		-- в гору медленнее, с горы быстрее
-		local slope = 1 - 0.25 * (c.pitch / RAMP_ANGLE)
-		local target = c.running and CART_SPEEDS[c.speedIdx] * slope or 0
-		c.speed += (target - c.speed) * math.min(1, dt * 2.5)
+		-- в гору медленнее, с горы быстрее (не больше, чем на уклоне)
+		local _, tan0 = Geo.samplePath(c.info, c.s)
+		local climb = math.clamp(tan0.Y * c.dir / math.sin(RAMP_ANGLE), -1, 1)
+		local slope = 1 - 0.25 * climb
+		local goal = c.running and CART_SPEEDS[c.speedIdx] * slope or 0
+		c.speed += (goal - c.speed) * math.min(1, dt * 2.5)
 		if not c.running and c.speed < 0.1 then
 			c.speed = 0
 		end
@@ -749,16 +993,18 @@ local function stepCart(dt)
 			if dist <= 0 then
 				break
 			end
-			local remain = (1 - c.u) * c.len
+			local info = c.info
+			local remain = (c.dir > 0) and (info.len - c.s) or c.s
 			if dist < remain then
-				c.u += dist / c.len
+				c.s += c.dir * dist
 				dist = 0
 			else
 				dist -= remain
-				if not advanceTile() then
+				c.s = (c.dir > 0) and info.len or 0
+				c.rebase = true
+				if not advanceCart(c) then
 					-- конец пути: разворот на этой же рельсе
-					c.entry, c.exit = c.exit, c.entry
-					c.u = 0
+					c.dir = -c.dir
 					c.speed = 0
 					c.wait = 0.45
 					break
@@ -767,13 +1013,19 @@ local function stepCart(dt)
 		end
 	end
 
-	local pos, heading, pitch = pathPoint(c.tile, c.entry, c.exit, c.u)
-	local targetYaw = math.atan2(-heading.X, -heading.Z)
-	local d = (targetYaw - c.yaw + math.pi) % (2 * math.pi) - math.pi
-	c.yaw += d * (1 - math.exp(-dt * 12))
-	c.pitch += (pitch - c.pitch) * (1 - math.exp(-dt * 10))
+	-- поза вагонетки: положение берём точно с пути, а поворот при смене рельсы доворачиваем плавно
+	local pos, tan, up = Geo.samplePath(c.info, c.s)
+	local trot = Geo.frameFrom(tan * c.dir, up)
+	if c.rebase then
+		c.kink = trot:Inverse() * c.lastRot
+		c.rebase = false
+	end
+	c.kink = c.kink:Lerp(CFrame.new(), 1 - math.exp(-dt * 10))
+	local rot = trot * c.kink
+	c.lastRot = rot
+	c.gap = c.gap * math.exp(-dt * 10)
 
-	local cf = CFrame.new(pos) * CFrame.Angles(0, c.yaw, 0) * CFrame.Angles(c.pitch, 0, 0) * CFrame.new(0, 0.7, 0)
+	local cf = CFrame.new(pos + c.gap) * rot * CFrame.new(0, 0.7, 0)
 	c.cf = cf
 	c.model:PivotTo(cf)
 
@@ -998,6 +1250,123 @@ local actionBtn, actionIcon, actionLbl = toolButton("✔", "Поставить",
 setBase(actionBtn, C.goodDark)
 actionBtn.Visible = UserInputService.TouchEnabled
 
+-- ===== Свободный режим: интерфейс =====
+local FUI = {}
+
+-- нижняя панель над основной: петля, наклон, крен, сторона, магнит, шаг угла
+FUI.dock = make("Frame", {
+	AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -100),
+	Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.XY,
+	BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false,
+}, root)
+corner(FUI.dock, 18)
+stroke(FUI.dock, WHITE, 1, 0.88)
+pad(FUI.dock, 8)
+make("UIListLayout", {
+	FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
+	SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center,
+}, FUI.dock)
+
+do
+	local function freeButton(key, icon, text, order)
+		local b, _, lb = dockButton(FUI.dock, icon, text, order, 64)
+		FUI[key] = b
+		FUI[key .. "Lbl"] = lb
+		return b
+	end
+	toolBtns.loop = freeButton("loop", "🎢", "Петля", 1) -- «Петля» — такой же инструмент, как остальные
+	freeButton("pitch", "↗", "Наклон", 2)
+	freeButton("roll", "🔃", "Крен", 3)
+	freeButton("side", "↔", "Сторона", 4)
+	freeButton("magnet", "🧲", "Магнит", 5)
+	freeButton("step", "📏", "Шаг", 6)
+	FUI.pitchLbl.TextSize = 10
+	FUI.rollLbl.TextSize = 10
+	FUI.stepLbl.TextSize = 10
+	FUI.only = { FUI.pitch, FUI.roll, FUI.side, FUI.magnet, FUI.step } -- кнопки, нужные только когда что-то ставишь
+end
+
+-- маленький светящийся шарик на конце рельсы, к которому прилип призрак
+FUI.mark = make("Part", {
+	Name = "MagnetMark", Shape = Enum.PartType.Ball, Size = Vector3.new(1.1, 1.1, 1.1),
+	Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false,
+	Material = Enum.Material.Neon, Color = C.accent, Transparency = 0.15,
+})
+
+local function refreshFreeButtons()
+	local o = FM.snapped and FM.rel or FM -- когда призрак прилип, углы считаются от конца рельсы
+	FUI.pitchLbl.Text = "Наклон " .. math.round(o.pitch) .. "°"
+	FUI.rollLbl.Text = "Крен " .. math.round(o.roll) .. "°"
+	FUI.stepLbl.Text = "Шаг " .. FM.stepAngle() .. "°"
+	FUI.magnetLbl.Text = (FM.magnet and FM.snapped) and "Прилип ✓" or "Магнит"
+	setActive(FUI.side, FM.flip, C.accentDark)
+	setActive(FUI.magnet, FM.magnet, C.goodDark)
+end
+refreshFreeButtons()
+
+-- переключатель «Свободный режим» — как на iPhone (слева сверху, виден в режиме строительства)
+do
+	local SW_W, SW_H, KNOB = 54, 32, 28
+	FUI.card = make("Frame", {
+		Position = UDim2.fromOffset(14, 10), Size = UDim2.fromOffset(226, 54),
+		BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false,
+	}, root)
+	corner(FUI.card, 16)
+	stroke(FUI.card, WHITE, 1, 0.88)
+	label(FUI.card, {
+		Position = UDim2.fromOffset(14, 8), Size = UDim2.new(1, -92, 0, 20),
+		Font = Enum.Font.GothamBold, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left,
+		Text = "Свободный режим",
+	})
+	FUI.sub = label(FUI.card, {
+		Position = UDim2.fromOffset(14, 28), Size = UDim2.new(1, -92, 0, 16),
+		TextSize = 11, TextColor3 = C.sub, TextXAlignment = Enum.TextXAlignment.Left,
+	})
+	FUI.track = make("TextButton", {
+		AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -12, 0.5, 0),
+		Size = UDim2.fromOffset(SW_W, SW_H), BackgroundColor3 = C.swOff,
+		AutoButtonColor = false, BorderSizePixel = 0, Text = "",
+	}, FUI.card)
+	corner(FUI.track, SW_H / 2)
+	FUI.knob = make("Frame", {
+		Position = UDim2.fromOffset(2, 2), Size = UDim2.fromOffset(KNOB, KNOB),
+		BackgroundColor3 = WHITE, BorderSizePixel = 0,
+	}, FUI.track)
+	corner(FUI.knob, KNOB / 2)
+	stroke(FUI.knob, Color3.new(0, 0, 0), 1, 0.8) -- лёгкая «тень» вокруг ползунка
+
+	-- положение ползунка и цвет дорожки; animate — плавно, как на iPhone
+	function FUI.refreshSwitch(animate)
+		local on = FM.on
+		local goalPos = UDim2.fromOffset(on and (SW_W - KNOB - 2) or 2, 2)
+		local goalSize = UDim2.fromOffset(KNOB, KNOB)
+		local color = on and C.swOn or C.swOff
+		if animate then
+			tween(FUI.knob, 0.28, { Position = goalPos, Size = goalSize }, Enum.EasingStyle.Quint)
+			tween(FUI.track, 0.22, { BackgroundColor3 = color })
+		else
+			FUI.knob.Position = goalPos
+			FUI.knob.Size = goalSize
+			FUI.track.BackgroundColor3 = color
+		end
+		FUI.sub.Text = on and "без правил · петли" or "по сетке, как обычно"
+		FUI.sub.TextColor3 = on and C.good or C.sub
+	end
+
+	-- пока палец / мышь прижаты, ползунок слегка вытягивается (как у настоящего переключателя)
+	FUI.track.MouseButton1Down:Connect(function()
+		local w = KNOB + 6
+		tween(FUI.knob, 0.1, {
+			Size = UDim2.fromOffset(w, KNOB),
+			Position = UDim2.fromOffset(FM.on and (SW_W - w - 2) or 2, 2),
+		})
+	end)
+	FUI.track.MouseLeave:Connect(function()
+		FUI.refreshSwitch(true)
+	end)
+end
+FUI.refreshSwitch(false)
+
 local hint = make("TextLabel", {
 	AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -106),
 	Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.XY,
@@ -1015,11 +1384,18 @@ local HINTS = {
 	cart = TOUCH_ONLY and "Тапни рельсу → «Поставить» вагонетку" or "Нажми на рельсу, чтобы поставить на неё вагонетку",
 	sign = TOUCH_ONLY and "Напиши текст в поле → тапни место → «Поставить»  ·  ↻ — повернуть" or "Напиши текст в поле выше  ·  ЛКМ — поставить  ·  R — повернуть  ·  E / Q — выше / ниже",
 	edit = TOUCH_ONLY and "Напиши новый текст → тапни табличку → «Применить»" or "Напиши новый текст в поле выше и нажми ЛКМ на табличке",
+	loop = "Мёртвая петля ставится только в свободном режиме",
+	-- подсказки свободного режима (для всего, что ставится); короткие, чтобы не залезать на боковые панели
+	free = {
+		place = TOUCH_ONLY and "Тапни место → «Поставить»  ·  внизу: наклон, крен, магнит" or "ЛКМ — поставить  ·  R поворот  ·  T наклон  ·  Y крен  ·  M магнит",
+		loop = TOUCH_ONLY and "Подведи к концу рельсы — прилипнет  ·  «Поставить»" or "Подведи к концу рельсы — прилипнет 🧲  ·  ЛКМ — поставить",
+		sign = TOUCH_ONLY and "Напиши текст → тапни место → «Поставить»" or "Текст в поле выше  ·  ЛКМ — поставить  ·  R / T / Y — повороты",
+	},
 }
 local ACTIONS = {
 	straight = { "✔", "Поставить" }, curve = { "✔", "Поставить" }, ramp = { "✔", "Поставить" },
 	erase = { "🗑", "Удалить" }, cart = { "🚃", "Поставить" },
-	sign = { "✔", "Поставить" }, edit = { "✏️", "Применить" },
+	sign = { "✔", "Поставить" }, edit = { "✏️", "Применить" }, loop = { "✔", "Поставить" },
 }
 
 -- Поле для текста таблички (над подсказкой)
@@ -1073,6 +1449,13 @@ signBox.FocusLost:Connect(function()
 		signBox.Text = t
 	end
 end)
+
+-- когда над основной панелью висит панель свободного режима, подсказку и поле текста поднимаем выше
+local function layoutBottom()
+	local extra = FUI.dock.Visible and 80 or 0
+	hint.Position = UDim2.new(0.5, 0, 1, -106 - extra)
+	signPanel.Position = UDim2.new(0.5, 0, 1, -150 - extra)
+end
 
 -- Панель высоты (слева)
 local hpanel = make("Frame", {
@@ -1134,10 +1517,10 @@ hudGo.Activated:Connect(function()
 end)
 hudRev.Activated:Connect(function()
 	if cart then
-		cart.entry, cart.exit = cart.exit, cart.entry
-		cart.u = 1 - cart.u
+		cart.dir = -cart.dir
 		cart.speed = 0
 		cart.wait = 0
+		cart.rebase = true -- вагонетка плавно развернётся на месте
 	end
 end)
 hudSpeed.Activated:Connect(function()
@@ -1368,19 +1751,32 @@ end)
 
 -- ===== Призрак, подсветка под курсором, действия =====
 local function isPlacing(t)
-	return t == "straight" or t == "curve" or t == "ramp" or t == "sign"
+	return t == "straight" or t == "curve" or t == "ramp" or t == "sign" or t == "loop"
 end
 
 -- инструменты, которые можно «тянуть» зажатой кнопкой мыши
+-- (в свободном режиме рельсы ставятся по одной — иначе магнит за секунду выстроил бы бесконечную цепочку)
 local function isHoldTool(t)
-	return t == "straight" or t == "curve" or t == "ramp" or t == "erase"
+	if t == "erase" then
+		return true
+	end
+	return (not FM.on) and (t == "straight" or t == "curve" or t == "ramp")
+end
+
+local function hintFor(t)
+	if FM.on and isPlacing(t) then
+		return HINTS.free[t] or HINTS.free.place
+	end
+	return HINTS[t]
 end
 
 local function destroyGhost()
 	if ghost then
 		ghost:Destroy()
 	end
-	ghost, ghostKind, ghostHL, ghostPos, ghostCF = nil, nil, nil, nil, nil
+	ghost, ghostKind, ghostHL, ghostShown, ghostCF = nil, nil, nil, nil, nil
+	FUI.mark.Parent = nil
+	FM.snapped = false
 end
 
 local function createGhost(kind)
@@ -1419,15 +1815,64 @@ local function getRay()
 	return camera:ViewportPointToRay(m.X, m.Y)
 end
 
-local function updateGhost(dt)
-	-- плавный поворот (всегда в одну сторону, без «обратной прокрутки»)
-	rotCurrent += (rotTarget - rotCurrent) * (1 - math.exp(-dt * 16))
+-- ----- Магнит (свободный режим) -----
+-- конец рельсы «свободен», если рядом нет конца другой рельсы
+function Geo.endpointOpen(ep)
+	for _, o in ipairs(eps) do
+		if o.info ~= ep.info and (o.pos - ep.pos).Magnitude < 0.8 then
+			return false
+		end
+	end
+	return true
+end
 
+-- ближайший к лучу свободный конец рельсы (чем дальше конец, тем щедрее допуск)
+function Geo.findMagnet(ray)
+	local best, bestD
+	for _, ep in ipairs(eps) do
+		local v = ep.pos - ray.Origin
+		local t = v:Dot(ray.Direction)
+		if t > 1 and t < 250 then
+			local d = (v - ray.Direction * t).Magnitude
+			if d < FCFG.MAGNET + t * 0.015 and (not bestD or d < bestD) and Geo.endpointOpen(ep) then
+				best, bestD = ep, d
+			end
+		end
+	end
+	return best
+end
+
+-- где окажется рельса, если стыковать её с концом ep: началом (обычно) или концом («Сторона»);
+-- FM.rel — доворот от идеального продолжения (по умолчанию нули — рельса продолжает путь ровно)
+function Geo.attachCF(kind, ep)
+	local lf = Geo.localFrames(kind)
+	local rel = Geo.oriCF(FM.rel.yaw, FM.rel.pitch, FM.rel.roll)
+	if FM.flip then
+		return Geo.frameCF(ep.pos, -ep.dir, ep.up) * rel * lf.e:Inverse()
+	end
+	return Geo.frameCF(ep.pos, ep.dir, ep.up) * rel * lf.s:Inverse()
+end
+
+-- такая же рельса уже стоит ровно в этом месте (две одинаковые друг на друге не нужны)
+function Geo.isDuplicate(kind, cf)
+	for _, info in pairs(pieces) do
+		if info.kind == kind
+			and (info.cf.Position - cf.Position).Magnitude < 0.3
+			and info.cf.LookVector:Dot(cf.LookVector) > 0.98
+			and info.cf.UpVector:Dot(cf.UpVector) > 0.98 then
+			return true
+		end
+	end
+	return false
+end
+
+local function updateGhost(dt)
 	local ray = getRay()
 	if not ray then
 		return
 	end
 
+	-- точка под курсором: земля (уровень 0) или горизонтальная плоскость нужной высоты
 	local pos
 	if level == 0 then
 		-- на земле: луч до поверхности
@@ -1443,7 +1888,7 @@ local function updateGhost(dt)
 		end
 	else
 		-- в воздухе: луч до горизонтальной плоскости нужной высоты
-		local py = refY + BASE_HEIGHT / 2 + level * RISE
+		local py = refY + BASE_HEIGHT / 2 + level * FM.levelStep()
 		local dy = ray.Direction.Y
 		if math.abs(dy) > 1e-4 then
 			local t = (py - ray.Origin.Y) / dy
@@ -1454,22 +1899,58 @@ local function updateGhost(dt)
 		end
 	end
 
-	if not pos then
+	local tcf, valid, snapEp
+	if FM.on then
+		-- магнит: прилипаем к ближайшему свободному концу другой рельсы
+		if FM.magnet and ghostKind ~= "sign" then
+			snapEp = Geo.findMagnet(ray)
+		end
+		if snapEp then
+			tcf = Geo.attachCF(ghostKind, snapEp)
+		elseif pos then
+			tcf = CFrame.new(pos) * Geo.oriCF(rotTarget, FM.pitch, FM.roll)
+		end
+		valid = tcf ~= nil and railCount < MAX_RAILS and not Geo.isDuplicate(ghostKind, tcf)
+	elseif pos then
+		tcf = CFrame.new(pos) * CFrame.Angles(0, math.rad(rotTarget % 360), 0)
+		valid = (railCount < MAX_RAILS) and not tileAt[cellKey(pos.X, pos.Z)]
+	end
+
+	-- призрак «прилип» или «отлип» — обновляем подписи кнопок
+	local snapped = snapEp ~= nil
+	if snapped ~= FM.snapped then
+		FM.snapped = snapped
+		refreshFreeButtons()
+	end
+
+	if not tcf then
 		ghost.Parent = nil
-		ghostCF, ghostPos = nil, nil
+		ghostCF, ghostShown = nil, nil
+		FUI.mark.Parent = nil
 		return
 	end
 
-	ghostCF = CFrame.new(pos) * CFrame.Angles(0, math.rad(rotTarget % 360), 0)
-	ghostValid = (railCount < MAX_RAILS) and not tileAt[cellKey(pos.X, pos.Z)]
+	ghostCF = tcf
+	ghostValid = valid
 
-	ghostPos = ghostPos and ghostPos:Lerp(pos, 1 - math.exp(-dt * 24)) or pos
+	-- призрак плавно догоняет цель (и по положению, и по повороту)
+	ghostShown = ghostShown and ghostShown:Lerp(tcf, 1 - math.exp(-dt * 20)) or tcf
 	local bob = 0.1 + math.sin(os.clock() * 4) * 0.06
 	ghost.Parent = camera
-	ghost:PivotTo(CFrame.new(ghostPos + Vector3.new(0, bob, 0)) * CFrame.Angles(0, math.rad(rotCurrent), 0))
+	ghost:PivotTo(CFrame.new(0, bob, 0) * ghostShown)
 
-	ghostHL.FillColor = ghostValid and C.good or C.bad
+	ghostHL.FillColor = (not ghostValid) and C.bad or (snapped and C.accent or C.good)
 	ghostHL.FillTransparency = 0.5 + math.sin(os.clock() * 6) * 0.15
+
+	-- светящийся шарик на конце рельсы, к которому прилип призрак
+	if snapEp then
+		local sz = 1.1 + math.sin(os.clock() * 8) * 0.15
+		FUI.mark.Size = Vector3.new(sz, sz, sz)
+		FUI.mark.Position = snapEp.pos + snapEp.up * 0.7
+		FUI.mark.Parent = camera
+	else
+		FUI.mark.Parent = nil
+	end
 end
 
 local function updateHover()
@@ -1533,7 +2014,7 @@ local function doAction(fromHold)
 		markDirty()
 		toast("✏️ Текст таблички обновлён", C.good)
 	else
-		if fromHold and tool == "sign" then
+		if fromHold and (tool == "sign" or FM.on) then
 			return
 		end
 		if railCount >= MAX_RAILS then
@@ -1546,20 +2027,55 @@ local function doAction(fromHold)
 		if not ghostCF or not ghostValid then
 			return
 		end
-		local p = ghostCF.Position
-		spawnRail(p.X, round2(p.Y), p.Z, rotTarget % 360, tool, true, finalSignText(signText))
+		local txt = finalSignText(signText)
+		if FM.on then
+			-- свободная рельса: положение и углы берём прямо из призрака
+			local x, y, z, yaw, pitch, roll = Geo.decompose(ghostCF)
+			spawnPiece(tool, round2(x), round2(y), round2(z), round2(yaw), round2(pitch), round2(roll), true, true, txt)
+		else
+			local p = ghostCF.Position
+			spawnPiece(tool, p.X, round2(p.Y), p.Z, rotTarget % 360, 0, 0, false, true, txt)
+		end
 		ghostValid = false
 		markDirty()
 		onRailsChanged()
 	end
 end
 
+-- поворот вокруг вертикали: в обычном режиме по 90°, в свободном — на выбранный шаг
 local function rotate(dir)
-	rotTarget += 90 * dir
+	if not FM.on then
+		rotTarget += 90 * dir
+	elseif FM.snapped then
+		FM.rel.yaw = FM.wrap(FM.rel.yaw + FM.stepAngle() * dir)
+	else
+		rotTarget += FM.stepAngle() * dir
+	end
+end
+
+-- наклон (pitch) и крен (roll): «в воздухе» — относительно мира, у прилипшего призрака — относительно конца рельсы
+function FM.tilt(which, dir)
+	if not FM.on then
+		return
+	end
+	local o = FM.snapped and FM.rel or FM
+	o[which] = FM.wrap(o[which] + FM.stepAngle() * dir)
+	refreshFreeButtons()
+end
+
+function FM.toggleMagnet()
+	FM.magnet = not FM.magnet
+	refreshFreeButtons()
+	toast(FM.magnet and "🧲 Магнит включён" or "🧲 Магнит выключен", FM.magnet and C.good or C.sub)
+end
+
+function FM.cycleStep()
+	FM.angle = FM.angle % #FCFG.ANGLES + 1
+	refreshFreeButtons()
 end
 
 local function setLevel(n)
-	n = math.clamp(n, 0, MAX_LEVEL)
+	n = math.clamp(n, 0, FM.on and FCFG.MAX_LEVEL or MAX_LEVEL)
 	if n == level then
 		return
 	end
@@ -1583,6 +2099,9 @@ local function sampleRefY()
 end
 
 local function setTool(t)
+	if t == "loop" and not FM.on then
+		t = "straight" -- петля есть только в свободном режиме
+	end
 	tool = t
 	hoverRail = nil
 	hoverHL.Parent = nil
@@ -1594,6 +2113,9 @@ local function setTool(t)
 	rotateBtn.Visible = placing
 	hpanel.Visible = placing
 	signPanel.Visible = (t == "sign" or t == "edit")
+	for _, b in ipairs(FUI.only) do
+		b.Visible = placing
+	end
 	if placing then
 		if ghostKind ~= t then
 			createGhost(t)
@@ -1603,7 +2125,32 @@ local function setTool(t)
 	end
 	actionIcon.Text = ACTIONS[t][1]
 	actionLbl.Text = ACTIONS[t][2]
-	hint.Text = HINTS[t]
+	hint.Text = hintFor(t)
+end
+
+-- переключатель «Свободный режим»
+local function setFreeMode(on)
+	if on == FM.on then
+		return
+	end
+	local oldStep = FM.levelStep()
+	FM.on = on
+	-- высота хранится в «шагах»: переводим в новые шаги, чтобы рельса осталась на той же высоте
+	level = math.clamp(math.round(level * oldStep / FM.levelStep()), 0, on and FCFG.MAX_LEVEL or MAX_LEVEL)
+	hLabel.Text = tostring(level)
+	if not on then
+		rotTarget = math.round(rotTarget / 90) * 90 -- обычный режим знает только прямые углы
+	end
+	FM.snapped = false
+	ghostShown = nil
+	FUI.refreshSwitch(true)
+	refreshFreeButtons()
+	FUI.dock.Visible = buildMode and on
+	layoutBottom()
+	if buildMode then
+		setTool(tool)
+	end
+	toast(on and "🔓 Свободный режим: рельсы без правил" or "🔒 Обычный режим: рельсы по сетке", on and C.good or C.sub)
 end
 
 local function setBuildMode(on)
@@ -1612,6 +2159,15 @@ local function setBuildMode(on)
 	tools.Visible = on
 	divider.Visible = on
 	hint.Visible = on
+	FUI.dock.Visible = on and FM.on
+	if on then
+		FUI.card.Position = UDim2.fromOffset(-250, 10)
+		FUI.card.Visible = true
+		tween(FUI.card, 0.4, { Position = UDim2.fromOffset(14, 10) }, Enum.EasingStyle.Back)
+	else
+		FUI.card.Visible = false
+	end
+	layoutBottom()
 	buildIcon.Text = on and "✖" or "🚂"
 	buildLbl.Text = on and "Выйти" or "Строить"
 	setBase(buildBtn, on and C.badDark or C.goodDark)
@@ -1652,6 +2208,27 @@ hReset.Activated:Connect(function()
 	setLevel(0)
 end)
 
+-- кнопки свободного режима
+FUI.track.Activated:Connect(function()
+	setFreeMode(not FM.on)
+end)
+FUI.pitch.Activated:Connect(function()
+	FM.tilt("pitch", 1)
+end)
+FUI.roll.Activated:Connect(function()
+	FM.tilt("roll", 1)
+end)
+FUI.side.Activated:Connect(function()
+	FM.flip = not FM.flip
+	refreshFreeButtons()
+end)
+FUI.magnet.Activated:Connect(function()
+	FM.toggleMagnet()
+end)
+FUI.step.Activated:Connect(function()
+	FM.cycleStep()
+end)
+
 -- ===== Ввод =====
 local TOOL_KEYS = {
 	[Enum.KeyCode.One] = "straight",
@@ -1661,6 +2238,7 @@ local TOOL_KEYS = {
 	[Enum.KeyCode.Five] = "cart",
 	[Enum.KeyCode.Six] = "sign",
 	[Enum.KeyCode.Seven] = "edit",
+	[Enum.KeyCode.Eight] = "loop",
 }
 
 UserInputService.LastInputTypeChanged:Connect(function(t)
@@ -1672,6 +2250,7 @@ UserInputService.InputBegan:Connect(function(input, processed)
 		return
 	end
 	local t = input.UserInputType
+	local back = UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) and -1 or 1
 	if t == Enum.UserInputType.Touch then
 		touchPos = input.Position -- на телефоне тап двигает призрак, ставим кнопкой в панели
 	elseif t == Enum.UserInputType.MouseButton1 then
@@ -1681,7 +2260,32 @@ UserInputService.InputBegan:Connect(function(input, processed)
 		end
 	elseif input.KeyCode == Enum.KeyCode.R then
 		if buildMode and isPlacing(tool) then
-			rotate(UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) and -1 or 1)
+			rotate(back)
+		end
+	elseif input.KeyCode == Enum.KeyCode.T then
+		if buildMode and isPlacing(tool) then
+			FM.tilt("pitch", back)
+		end
+	elseif input.KeyCode == Enum.KeyCode.Y then
+		if buildMode and isPlacing(tool) then
+			FM.tilt("roll", back)
+		end
+	elseif input.KeyCode == Enum.KeyCode.V then
+		if buildMode and FM.on and isPlacing(tool) then
+			FM.flip = not FM.flip
+			refreshFreeButtons()
+		end
+	elseif input.KeyCode == Enum.KeyCode.M then
+		if buildMode and FM.on then
+			FM.toggleMagnet()
+		end
+	elseif input.KeyCode == Enum.KeyCode.N then
+		if buildMode and FM.on then
+			FM.cycleStep()
+		end
+	elseif input.KeyCode == Enum.KeyCode.F then
+		if buildMode then
+			setFreeMode(not FM.on)
 		end
 	elseif input.KeyCode == Enum.KeyCode.E then
 		if buildMode and isPlacing(tool) then
@@ -1700,7 +2304,10 @@ UserInputService.InputBegan:Connect(function(input, processed)
 			setBuildMode(not buildMode)
 		end
 	elseif TOOL_KEYS[input.KeyCode] and buildMode then
-		setTool(TOOL_KEYS[input.KeyCode])
+		local name = TOOL_KEYS[input.KeyCode]
+		if name ~= "loop" or FM.on then
+			setTool(name)
+		end
 	end
 end)
 
