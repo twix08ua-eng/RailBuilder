@@ -1,7 +1,10 @@
--- LocalScript (ВСЁ В ОДНОМ) — ФИНАЛ + ТАБЛИЧКИ + СВОБОДНЫЙ РЕЖИМ
+-- LocalScript (ВСЁ В ОДНОМ) — ФИНАЛ + ТАБЛИЧКИ + СВОБОДНЫЙ РЕЖИМ + ЭКРАН ЗАГРУЗКИ
 -- Положи в: StarterPlayer > StarterPlayerScripts > RailBuilder
 -- Рельсы, таблички и вагонетка существуют только на твоём клиенте — другие игроки их не видят.
 -- Сохранение между заходами работает, если в игре есть серверный скрипт RailSaveServer.
+--
+-- ЭКРАН ЗАГРУЗКИ — при входе 5 секунд (настройки в таблице LOAD): картинка прилетает в центр,
+-- внизу появляется название, картинка пульсирует под музыку.
 --
 -- СВОБОДНЫЙ РЕЖИМ — переключатель как на iPhone (слева сверху в режиме строительства, или клавиша F).
 -- Когда он включён, правил нет: рельсы ставятся где угодно и под любым углом, без сетки,
@@ -18,6 +21,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
+local ContentProvider = game:GetService("ContentProvider")
 
 local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
@@ -36,6 +40,16 @@ local SEAT_OFFSET = CFrame.new(0, 2.3, 0.1) -- где сидит игрок от
 local SIGN_MAX_CHARS = 80   -- максимум символов на табличке
 local SIGN_MAX_LINES = 4    -- максимум строк на табличке
 local SIGN_DEFAULT = "Привет!"
+
+-- настройки экрана загрузки
+local LOAD = {
+	TIME = 5,                              -- сколько секунд длится загрузка
+	IMAGE = "rbxassetid://136476233036438", -- картинка в центре
+	SOUND = "rbxassetid://88060724643515",  -- музыка, под которую пульсирует картинка
+	TITLE = "Котость.Rails",               -- текст под картинкой
+	VOLUME = 0.8,                          -- громкость музыки
+	PULSE = 0.16,                          -- насколько сильно картинка «бьётся» (0.16 = до +16% размера)
+}
 
 -- настройки свободного режима
 local FCFG = {
@@ -119,6 +133,19 @@ end
 
 function FM.stepAngle()
 	return FCFG.ANGLES[FM.angle]
+end
+
+-- сбрасываем всё, что настроено «под свободный режим»: наклон, крен, углы стыка, сторону, прилипание
+function FM.resetAngles()
+	FM.pitch, FM.roll = 0, 0
+	FM.rel.yaw, FM.rel.pitch, FM.rel.roll = 0, 0, 0
+	FM.flip = false
+	FM.snapped = false
+end
+
+-- ближайший прямой угол (0 / 90 / 180 / 270) — обычные рельсы всегда стоят ровно по сетке
+function FM.flatYaw(v)
+	return (math.round(v / 90) * 90) % 360
 end
 
 local tileAt = {} -- [ "gx,gz" ] = модель рельсы / таблички (только обычный режим)
@@ -206,6 +233,116 @@ local function setSignText(model, text)
 			d.Text = text
 		end
 	end
+end
+
+-- ===== Фейковый экран загрузки =====
+-- Картинка плавно прилетает в центр, ниже появляется название, а сама картинка пульсирует под музыку.
+-- Громкость музыки читаем через PlaybackLoudness; пока музыка не заиграла (или не загрузилась),
+-- картинка пульсирует по таймеру, чтобы экран не выглядел мёртвым.
+local Loading = { done = false }
+do
+	local vp = camera.ViewportSize
+	local imgSize = math.clamp(math.min(vp.X, vp.Y) * 0.36, 120, 260)
+	local half = imgSize / 2
+	local titleY = half + imgSize * 0.12 + 30 -- где (по вертикали от центра экрана) стоит название
+	local T = math.max(LOAD.TIME, 2)
+	local FADE = 0.5                          -- последние полсекунды экран плавно гаснет
+
+	local lgui = make("ScreenGui", {
+		Name = "RailLoadingUI", ResetOnSpawn = false, IgnoreGuiInset = true,
+		DisplayOrder = 1000, ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+	}, player:WaitForChild("PlayerGui"))
+
+	-- CanvasGroup — чтобы гасить весь экран целиком одним твином
+	local screen = make("CanvasGroup", {
+		Size = UDim2.fromScale(1, 1), BackgroundColor3 = C.bg, BorderSizePixel = 0,
+		Active = true, GroupTransparency = 0, -- Active — чтобы клики не проходили сквозь экран загрузки
+	}, lgui)
+
+	local img = make("ImageLabel", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, -0.4), -- стартует за верхним краем экрана
+		Size = UDim2.fromOffset(imgSize, imgSize),
+		BackgroundTransparency = 1, Image = LOAD.IMAGE, ImageTransparency = 1,
+		ScaleType = Enum.ScaleType.Fit, Rotation = -18,
+	}, screen)
+	local pulse = make("UIScale", {}, img)
+
+	local title = make("TextLabel", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0.5, 0, 0.5, titleY + 22),
+		Size = UDim2.fromOffset(420, 44),
+		BackgroundTransparency = 1, Font = Enum.Font.GothamBold, TextSize = 34,
+		TextColor3 = C.text, TextTransparency = 1, Text = LOAD.TITLE,
+	}, screen)
+
+	local track = make("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0.5, 0, 0.5, titleY + 44),
+		Size = UDim2.fromOffset(220, 6),
+		BackgroundColor3 = C.card, BackgroundTransparency = 1, BorderSizePixel = 0,
+	}, screen)
+	make("UICorner", { CornerRadius = UDim.new(0, 3) }, track)
+	local fill = make("Frame", {
+		Size = UDim2.fromScale(0, 1), BackgroundColor3 = C.accent, BorderSizePixel = 0,
+	}, track)
+	make("UICorner", { CornerRadius = UDim.new(0, 3) }, fill)
+
+	local sound = make("Sound", {
+		Name = "LoadingMusic", SoundId = LOAD.SOUND, Volume = LOAD.VOLUME, Looped = true,
+	}, lgui)
+
+	-- подгружаем картинку и звук заранее (не блокируя остальной скрипт)
+	task.spawn(function()
+		pcall(function()
+			ContentProvider:PreloadAsync({ img, sound })
+		end)
+	end)
+	sound:Play()
+
+	-- пульс: удар по громкости — быстро вверх, затем плавно вниз
+	local smooth = 0
+	local heard = false
+	local pulseConn = RunService.RenderStepped:Connect(function(dt)
+		local loud = sound.PlaybackLoudness
+		if loud > 2 then
+			heard = true
+		end
+		local target
+		if heard then
+			target = math.clamp(loud / 400, 0, 1)
+		else
+			target = (math.sin(os.clock() * 7) * 0.5 + 0.5) * 0.45
+		end
+		local k = (target > smooth) and 25 or 7
+		smooth += (target - smooth) * math.min(1, dt * k)
+		pulse.Scale = 1 + smooth * LOAD.PULSE
+	end)
+
+	-- 0.0 с: картинка прилетает в центр
+	tween(img, 1.3, { Position = UDim2.fromScale(0.5, 0.5), Rotation = 0 }, Enum.EasingStyle.Quint)
+	tween(img, 0.6, { ImageTransparency = 0 })
+
+	-- 0.9 с: появляются название и полоска загрузки
+	task.delay(0.9, function()
+		tween(title, 0.7, { TextTransparency = 0, Position = UDim2.new(0.5, 0, 0.5, titleY) }, Enum.EasingStyle.Quint)
+		tween(track, 0.5, { BackgroundTransparency = 0 })
+		tween(fill, math.max(0.1, T - 0.9 - FADE), { Size = UDim2.fromScale(1, 1) }, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+	end)
+
+	-- последние полсекунды: экран и музыка плавно гаснут
+	task.delay(T - FADE, function()
+		tween(screen, FADE, { GroupTransparency = 1 })
+		tween(sound, FADE, { Volume = 0 })
+	end)
+
+	-- ровно через LOAD.TIME секунд: убираем экран, и дальше показываются обычные панели
+	task.delay(T, function()
+		pulseConn:Disconnect()
+		sound:Stop()
+		lgui:Destroy()
+		Loading.done = true
+	end)
 end
 
 -- ===== Мир: контейнер рельс (клиентский → виден только тебе) =====
@@ -1912,7 +2049,8 @@ local function updateGhost(dt)
 		end
 		valid = tcf ~= nil and railCount < MAX_RAILS and not Geo.isDuplicate(ghostKind, tcf)
 	elseif pos then
-		tcf = CFrame.new(pos) * CFrame.Angles(0, math.rad(rotTarget % 360), 0)
+		-- обычный режим: рельса всегда стоит строго ровно — только поворот вокруг вертикали на 0 / 90 / 180 / 270
+		tcf = CFrame.new(pos) * CFrame.Angles(0, math.rad(FM.flatYaw(rotTarget)), 0)
 		valid = (railCount < MAX_RAILS) and not tileAt[cellKey(pos.X, pos.Z)]
 	end
 
@@ -2033,8 +2171,9 @@ local function doAction(fromHold)
 			local x, y, z, yaw, pitch, roll = Geo.decompose(ghostCF)
 			spawnPiece(tool, round2(x), round2(y), round2(z), round2(yaw), round2(pitch), round2(roll), true, true, txt)
 		else
+			-- обычная рельса: наклон и крен всегда 0, поворот — только 0 / 90 / 180 / 270
 			local p = ghostCF.Position
-			spawnPiece(tool, p.X, round2(p.Y), p.Z, rotTarget % 360, 0, 0, false, true, txt)
+			spawnPiece(tool, p.X, round2(p.Y), p.Z, FM.flatYaw(rotTarget), 0, 0, false, true, txt)
 		end
 		ghostValid = false
 		markDirty()
@@ -2138,11 +2277,15 @@ local function setFreeMode(on)
 	-- высота хранится в «шагах»: переводим в новые шаги, чтобы рельса осталась на той же высоте
 	level = math.clamp(math.round(level * oldStep / FM.levelStep()), 0, on and FCFG.MAX_LEVEL or MAX_LEVEL)
 	hLabel.Text = tostring(level)
+	-- сбрасываем всё «свободное»: наклон, крен, углы стыка, сторону, прилипание.
+	-- Иначе после выключения режима рельсы могли остаться повёрнутыми не по сетке.
+	FM.resetAngles()
 	if not on then
-		rotTarget = math.round(rotTarget / 90) * 90 -- обычный режим знает только прямые углы
+		rotTarget = FM.flatYaw(rotTarget) -- обычный режим знает только прямые углы
 	end
-	FM.snapped = false
-	ghostShown = nil
+	-- старый призрак выбрасываем и строим заново, чтобы он не тащил за собой старый поворот
+	destroyGhost()
+	ghostValid = false
 	FUI.refreshSwitch(true)
 	refreshFreeButtons()
 	FUI.dock.Visible = buildMode and on
@@ -2300,7 +2443,7 @@ UserInputService.InputBegan:Connect(function(input, processed)
 			setLevel(0)
 		end
 	elseif input.KeyCode == Enum.KeyCode.B then
-		if data then
+		if data and Loading.done then -- пока идёт экран загрузки, строить нельзя
 			setBuildMode(not buildMode)
 		end
 	elseif TOOL_KEYS[input.KeyCode] and buildMode then
@@ -2345,6 +2488,7 @@ RunService.RenderStepped:Connect(function(dt)
 end)
 
 -- ===== Старт: загрузка сохранения (если есть серверный скрипт) =====
+-- Всё грузится, пока идёт экран загрузки; панели появляются, когда он закончился.
 task.spawn(function()
 	local fn = ReplicatedStorage:WaitForChild("RailSaveFunction", 5)
 	local raw
@@ -2363,14 +2507,19 @@ task.spawn(function()
 	buildSlotCards()
 	refreshSlots()
 
+	loadRails(data.slots[data.active].rails)
+	busy = false
+	refreshSlots()
+
+	-- ждём конец экрана загрузки
+	while not Loading.done do
+		task.wait(0.1)
+	end
+
 	pill.Position = UDim2.new(0.5, 0, 0, -70)
 	pill.Visible = true
 	tween(pill, 0.5, { Position = UDim2.new(0.5, 0, 0, 10) }, Enum.EasingStyle.Back)
 	dock.Position = UDim2.new(0.5, 0, 1, 90)
 	dock.Visible = true
 	tween(dock, 0.5, { Position = UDim2.new(0.5, 0, 1, -14) }, Enum.EasingStyle.Back)
-
-	loadRails(data.slots[data.active].rails)
-	busy = false
-	refreshSlots()
 end)
