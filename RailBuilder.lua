@@ -1,7 +1,14 @@
--- LocalScript (ВСЁ В ОДНОМ) — ФИНАЛ + ТАБЛИЧКИ + СВОБОДНЫЙ РЕЖИМ + ЭКРАН ЗАГРУЗКИ
+-- LocalScript (ВСЁ В ОДНОМ) — ФИНАЛ + ТАБЛИЧКИ + СВОБОДНЫЙ РЕЖИМ + ЭКРАН ЗАГРУЗКИ + УКРАШЕНИЯ
 -- Положи в: StarterPlayer > StarterPlayerScripts > RailBuilder
--- Рельсы, таблички и вагонетка существуют только на твоём клиенте — другие игроки их не видят.
+-- Рельсы, таблички, украшения и вагонетка существуют только на твоём клиенте — другие игроки их не видят.
 -- Сохранение между заходами работает, если в игре есть серверный скрипт RailSaveServer.
+--
+-- УКРАШЕНИЯ — кнопка «Декор» (или клавиша 9) закрывает нижнюю панель и открывает панель с украшениями:
+-- в каждой карточке вместо картинки крутится объёмная модель. Выбери украшение и ставь его
+-- на землю, на рельсы или на нужную высоту (E / Q). R — повернуть (шаг 15°), кнопка «Назад» — вернуть обычную панель.
+-- Модели по ID (таблица MODELS) из LocalScript загрузить нельзя (InsertService работает только на сервере),
+-- поэтому каждое украшение собрано из деталей прямо в этом скрипте.
+-- Украшения сохраняются вместе с рельсами: в записи (6-е значение) лежит название украшения.
 --
 -- ЭКРАН ЗАГРУЗКИ — при входе 5 секунд (настройки в таблице LOAD): картинка прилетает в центр,
 -- внизу появляется название, картинка пульсирует под музыку.
@@ -40,6 +47,38 @@ local SEAT_OFFSET = CFrame.new(0, 2.3, 0.1) -- где сидит игрок от
 local SIGN_MAX_CHARS = 80   -- максимум символов на табличке
 local SIGN_MAX_LINES = 4    -- максимум строк на табличке
 local SIGN_DEFAULT = "Привет!"
+
+-- картинки интерфейса
+local IMG = {
+	PLACE = "rbxassetid://4485364377",      -- кнопка «Поставить»
+	DECOR = "rbxassetid://136476233036438", -- кнопка «Украшения»
+}
+
+-- ID моделей украшений из каталога
+local MODELS = {
+	pumpkin = 15429930446,     -- 🎃 Halloween: Тыква
+	hay = 5117398695,          -- 🎃 Halloween: Сено
+	xmascat = 123620200774954, -- 🎄 Merry Christmas: Новогодний кот
+	tree = 11720499037,        -- 🎄 Merry Christmas: Ёлка
+	gift = 332163549,          -- 🎄 Merry Christmas: Подарок
+}
+
+-- всё, что связано с украшениями, лежит в одной таблице (в скрипте и так много переменных)
+local Decor = {
+	list = { -- порядок и подписи карточек (ключи — из MODELS)
+		{ key = "pumpkin", name = "Тыква", tag = "Halloween" },
+		{ key = "hay", name = "Сено", tag = "Halloween" },
+		{ key = "xmascat", name = "Кот", tag = "Новый год" },
+		{ key = "tree", name = "Ёлка", tag = "Новый год" },
+		{ key = "gift", name = "Подарок", tag = "Новый год" },
+	},
+	GRID = 1,            -- шаг привязки украшений (студы)
+	TURN = 15,           -- на сколько градусов поворачивает R
+	open = false,        -- панель украшений открыта
+	key = "pumpkin",     -- выбранное украшение
+	ghostKey = nil,      -- какое украшение сейчас нарисовано призраком
+	builders = {}, spinners = {}, cards = {}, angle = 0,
+}
 
 -- настройки экрана загрузки
 local LOAD = {
@@ -86,8 +125,8 @@ local C = {
 }
 local TOUCH_ONLY = UserInputService.TouchEnabled and not UserInputService.MouseEnabled
 
-local KIND_CODE = { straight = 0, curve = 1, ramp = 2, sign = 3, loop = 4 }
-local CODE_KIND = { [0] = "straight", [1] = "curve", [2] = "ramp", [3] = "sign", [4] = "loop" }
+local KIND_CODE = { straight = 0, curve = 1, ramp = 2, sign = 3, loop = 4, decor = 5 }
+local CODE_KIND = { [0] = "straight", [1] = "curve", [2] = "ramp", [3] = "sign", [4] = "loop", [5] = "decor" }
 
 -- ===== Состояние =====
 local data = nil
@@ -98,7 +137,7 @@ local saveQueued = false
 local saveState = "off" -- off / saving / saved / error
 
 local buildMode = false
-local tool = "straight" -- straight / curve / ramp / loop / sign / edit / erase / cart
+local tool = "straight" -- straight / curve / ramp / loop / sign / edit / erase / cart / decor
 local rotTarget = 0
 local level, refY = 0, 0 -- уровень высоты и высота земли для уровня 0
 local ghost, ghostKind, ghostHL
@@ -669,6 +708,217 @@ local function newCartModel()
 	return model
 end
 
+-- ===== Украшения =====
+-- Модели по ID (таблица MODELS) из LocalScript не подгрузить — InsertService работает только на сервере.
+-- Поэтому каждое украшение собрано из деталей. Начало координат — центр основания (земля),
+-- «лицо» смотрит в -Z. Внутри модели нет вложенных Model — иначе «Стереть» не сможет её найти.
+do
+	local PLASTIC, FABRIC = Enum.Material.SmoothPlastic, Enum.Material.Fabric
+	local WOOD, NEON = Enum.Material.Wood, Enum.Material.Neon
+	local B = Decor.builders
+
+	-- эллипсоид (шар, растянутый до нужного размера)
+	local function ball(parent, name, size, cf, color, material, collide)
+		local p = newPart(parent, name, size, cf, color, material, collide == true)
+		make("SpecialMesh", { MeshType = Enum.MeshType.Sphere }, p)
+		return p
+	end
+
+	-- вертикальный цилиндр (у Part-цилиндра ось — X, поэтому поворачиваем на 90° вокруг Z)
+	local function pillar(parent, name, height, diam, cf, color, material, collide)
+		local p = newPart(parent, name, Vector3.new(height, diam, diam), cf * CFrame.Angles(0, 0, math.rad(90)),
+			color, material, collide == true)
+		p.Shape = Enum.PartType.Cylinder
+		return p
+	end
+
+	-- 🎃 Тыква: шесть долек, светящееся лицо, хвостик
+	B.pumpkin = function(m)
+		local orange, orange2 = Color3.fromRGB(240, 118, 22), Color3.fromRGB(224, 100, 14)
+		for k = 0, 5 do
+			ball(m, "Lobe", Vector3.new(1.3, 2.3, 2.8), CFrame.new(0, 1.15, 0) * CFrame.Angles(0, math.rad(k * 30 + 15), 0),
+				(k % 2 == 0) and orange or orange2, PLASTIC, true)
+		end
+		newPart(m, "Stem", Vector3.new(0.45, 0.8, 0.45), CFrame.new(0.05, 2.5, 0) * CFrame.Angles(0, 0, math.rad(-12)),
+			Color3.fromRGB(86, 116, 44), WOOD, false)
+		local glow = Color3.fromRGB(255, 196, 60)
+		for _, sx in ipairs({ -1, 1 }) do
+			newPart(m, "Eye", Vector3.new(0.42, 0.42, 0.3), CFrame.new(sx * 0.55, 1.5, -1.2) * CFrame.Angles(0, 0, math.rad(45)),
+				glow, NEON, false)
+		end
+		local mid
+		for i = -2, 2 do
+			local part = newPart(m, "Mouth", Vector3.new(0.3, 0.26, 0.3),
+				CFrame.new(i * 0.3, 0.78 + 0.07 * i * i, -1.2 + 0.03 * i * i), glow, NEON, false)
+			if i == 0 then
+				mid = part
+			end
+		end
+		make("PointLight", { Color = Color3.fromRGB(255, 170, 60), Range = 8, Brightness = 0.9 }, mid)
+	end
+
+	-- 🎃 Сено: тюк с верёвками и торчащими соломинками
+	B.hay = function(m)
+		local straw, light = Color3.fromRGB(224, 186, 86), Color3.fromRGB(240, 212, 120)
+		local strap = Color3.fromRGB(96, 66, 38)
+		newPart(m, "Bale", Vector3.new(3.4, 2.1, 2.2), CFrame.new(0, 1.05, 0), straw, FABRIC, true)
+		newPart(m, "Top", Vector3.new(3.3, 0.12, 2.1), CFrame.new(0, 2.1, 0), light, FABRIC, false)
+		for _, sx in ipairs({ -0.95, 0.95 }) do
+			newPart(m, "Strap", Vector3.new(0.14, 2.16, 2.26), CFrame.new(sx, 1.05, 0), strap, FABRIC, false)
+		end
+		local rng = Random.new(11) -- всегда одни и те же соломинки
+		for i = 1, 18 do
+			local cf = CFrame.new(rng:NextNumber(-1.6, 1.6), 2.14, rng:NextNumber(-1, 1))
+				* CFrame.Angles(rng:NextNumber(-0.6, 0.6), rng:NextNumber(0, math.pi), rng:NextNumber(-0.6, 0.6))
+			newPart(m, "Straw", Vector3.new(0.07, 0.07, rng:NextNumber(0.6, 1.1)), cf,
+				(i % 2 == 0) and straw or light, FABRIC, false)
+		end
+		for i = 1, 8 do
+			local sx = (i % 2 == 0) and 1 or -1
+			local cf = CFrame.new(sx * 1.72, rng:NextNumber(0.3, 1.8), rng:NextNumber(-0.9, 0.9))
+				* CFrame.Angles(0, rng:NextNumber(-0.5, 0.5), rng:NextNumber(-0.4, 0.4))
+			newPart(m, "Straw", Vector3.new(0.7, 0.07, 0.07), cf, (i % 2 == 0) and light or straw, FABRIC, false)
+		end
+	end
+
+	-- 🎄 Ёлка: три яруса ступенчатой «хвои», шарики и звезда
+	B.tree = function(m)
+		local trunk = Color3.fromRGB(104, 70, 42)
+		local leaf, leaf2 = Color3.fromRGB(34, 122, 60), Color3.fromRGB(46, 148, 74)
+		pillar(m, "Trunk", 1.0, 0.9, CFrame.new(0, 0.5, 0), trunk, WOOD, true)
+		local tiers = { { 4.2, 0.9 }, { 3.2, 2.1 }, { 2.2, 3.3 } } -- { ширина нижнего диска, высота яруса }
+		for t, tier in ipairs(tiers) do
+			for j = 0, 2 do
+				pillar(m, "Needles", 0.5, tier[1] * (1 - 0.28 * j), CFrame.new(0, tier[2] + 0.25 + j * 0.4, 0),
+					((t + j) % 2 == 0) and leaf or leaf2, FABRIC, j == 0)
+			end
+		end
+		pillar(m, "Tip", 0.5, 0.5, CFrame.new(0, 4.85, 0), leaf, FABRIC, false)
+		local gold = Color3.fromRGB(255, 214, 70)
+		for k = 0, 1 do
+			newPart(m, "Star", Vector3.new(0.75, 0.75, 0.25), CFrame.new(0, 5.35, 0) * CFrame.Angles(0, 0, math.rad(k * 45)),
+				gold, NEON, false)
+		end
+		local colors = {
+			Color3.fromRGB(255, 70, 80), Color3.fromRGB(90, 160, 255),
+			Color3.fromRGB(255, 214, 70), Color3.fromRGB(255, 130, 220),
+		}
+		local n = 0
+		for t, tier in ipairs(tiers) do
+			for k = 0, 3 do
+				n += 1
+				local a = math.rad(t * 37 + k * 90)
+				local r = tier[1] / 2 - 0.05
+				ball(m, "Ornament", Vector3.new(0.38, 0.38, 0.38),
+					CFrame.new(math.cos(a) * r, tier[2] + 0.18, math.sin(a) * r), colors[n % #colors + 1], NEON, false)
+			end
+		end
+	end
+
+	-- 🎄 Подарок: коробка с крышкой, лентой и бантом
+	B.gift = function(m)
+		local box, ribbon = Color3.fromRGB(214, 48, 60), Color3.fromRGB(250, 220, 90)
+		newPart(m, "Box", Vector3.new(2.4, 1.9, 2.4), CFrame.new(0, 0.95, 0), box, PLASTIC, true)
+		newPart(m, "Lid", Vector3.new(2.6, 0.45, 2.6), CFrame.new(0, 1.9, 0), box, PLASTIC, true)
+		newPart(m, "RibbonX", Vector3.new(2.46, 1.7, 0.45), CFrame.new(0, 0.95, 0), ribbon, PLASTIC, false)
+		newPart(m, "RibbonZ", Vector3.new(0.45, 1.7, 2.46), CFrame.new(0, 0.95, 0), ribbon, PLASTIC, false)
+		newPart(m, "LidRibbonX", Vector3.new(2.66, 0.5, 0.45), CFrame.new(0, 1.9, 0), ribbon, PLASTIC, false)
+		newPart(m, "LidRibbonZ", Vector3.new(0.45, 0.5, 2.66), CFrame.new(0, 1.9, 0), ribbon, PLASTIC, false)
+		for _, s in ipairs({ -1, 1 }) do
+			ball(m, "Bow", Vector3.new(0.95, 0.55, 0.5), CFrame.new(s * 0.45, 2.38, 0) * CFrame.Angles(0, 0, math.rad(s * -25)),
+				ribbon, PLASTIC, false)
+		end
+		ball(m, "Knot", Vector3.new(0.5, 0.5, 0.5), CFrame.new(0, 2.32, 0), ribbon, PLASTIC, false)
+	end
+
+	-- 🎄 Новогодний кот: сидит в шапке Деда Мороза и зелёном шарфе
+	B.xmascat = function(m)
+		local fur, white = Color3.fromRGB(232, 150, 70), Color3.fromRGB(250, 245, 238)
+		local red, green = Color3.fromRGB(205, 40, 48), Color3.fromRGB(46, 150, 84)
+		local dark = Color3.fromRGB(30, 30, 38)
+		local tail = {
+			Vector3.new(0.7, 0.4, 0.9), Vector3.new(1.05, 0.8, 1.15),
+			Vector3.new(1.15, 1.3, 1.1), Vector3.new(1.05, 1.75, 0.95),
+		}
+		for i, p in ipairs(tail) do
+			ball(m, "Tail", Vector3.new(0.55, 0.55, 0.55), CFrame.new(p), (i == #tail) and white or fur, FABRIC, false)
+		end
+		ball(m, "Body", Vector3.new(2, 2.1, 1.8), CFrame.new(0, 1.05, 0.1), fur, FABRIC, true)
+		ball(m, "Belly", Vector3.new(1.25, 1.35, 0.6), CFrame.new(0, 1.0, -0.62), white, FABRIC, false)
+		ball(m, "Head", Vector3.new(1.9, 1.6, 1.6), CFrame.new(0, 2.6, -0.05), fur, FABRIC, false)
+		for _, sx in ipairs({ -1, 1 }) do
+			ball(m, "Paw", Vector3.new(0.62, 0.5, 0.8), CFrame.new(sx * 0.5, 0.25, -0.7), white, FABRIC, false)
+			ball(m, "Foot", Vector3.new(0.7, 0.55, 0.9), CFrame.new(sx * 0.85, 0.28, 0.2), fur, FABRIC, false)
+			newPart(m, "Ear", Vector3.new(0.55, 0.55, 0.25),
+				CFrame.new(sx * 0.75, 3.2, -0.05) * CFrame.Angles(0, 0, math.rad(45 - sx * 15)), fur, FABRIC, false)
+			ball(m, "Eye", Vector3.new(0.26, 0.34, 0.14), CFrame.new(sx * 0.38, 2.7, -0.74), dark, PLASTIC, false)
+			ball(m, "Shine", Vector3.new(0.08, 0.1, 0.05), CFrame.new(sx * 0.34, 2.78, -0.8), white, PLASTIC, false)
+			for _, dy in ipairs({ -0.05, 0.08 }) do
+				newPart(m, "Whisker", Vector3.new(0.7, 0.03, 0.03),
+					CFrame.new(sx * 0.85, 2.48 + dy, -0.6) * CFrame.Angles(0, math.rad(sx * 20), math.rad(sx * dy * 120)),
+					dark, PLASTIC, false)
+			end
+		end
+		ball(m, "Nose", Vector3.new(0.22, 0.15, 0.14), CFrame.new(0, 2.5, -0.82), Color3.fromRGB(255, 150, 170), PLASTIC, false)
+		pillar(m, "Scarf", 0.35, 1.4, CFrame.new(0, 1.95, 0), green, FABRIC, false)
+		newPart(m, "ScarfEnd", Vector3.new(0.38, 1.0, 0.14), CFrame.new(0.45, 1.45, -0.78) * CFrame.Angles(0, 0, math.rad(-8)),
+			green, FABRIC, false)
+		-- шапка Деда Мороза (чуть заваливается назад)
+		pillar(m, "HatTrim", 0.3, 1.55, CFrame.new(0, 3.3, 0), white, FABRIC, false)
+		pillar(m, "Hat", 0.55, 1.25, CFrame.new(0, 3.7, 0), red, FABRIC, false)
+		pillar(m, "Hat", 0.5, 0.9, CFrame.new(0, 4.2, 0.1), red, FABRIC, false)
+		pillar(m, "Hat", 0.45, 0.55, CFrame.new(0, 4.62, 0.3), red, FABRIC, false)
+		ball(m, "Pom", Vector3.new(0.4, 0.4, 0.4), CFrame.new(0, 4.82, 0.55), white, FABRIC, false)
+		pcall(function()
+			m:ScaleTo(0.8) -- кот чуть меньше остальных украшений
+		end)
+	end
+
+	-- собрать украшение по ключу из MODELS
+	function Decor.newModel(key, name)
+		local m = Instance.new("Model")
+		m.Name = name or "Decor"
+		local origin = newPart(m, "Origin", Vector3.new(0.2, 0.2, 0.2), CFrame.new(0, 0, 0), WHITE, PLASTIC, false)
+		origin.Transparency = 1
+		origin.CanQuery = false
+		m.PrimaryPart = origin
+		local build = B[key] or B.gift
+		build(m)
+		return m
+	end
+
+	-- карточка с вращающейся моделью (ViewportFrame): вместо картинки крутится сама модель
+	function Decor.addSpinner(parent, key)
+		local vp = make("ViewportFrame", {
+			Position = UDim2.fromOffset(4, 4), Size = UDim2.new(1, -8, 0, 66),
+			BackgroundTransparency = 1, Active = false,
+			Ambient = Color3.fromRGB(150, 150, 165), LightColor = Color3.fromRGB(255, 244, 225),
+			LightDirection = Vector3.new(-0.5, -1, -0.6),
+		}, parent)
+		local m = Decor.newModel(key, "Preview")
+		m.Parent = vp
+		local bbCF, bbSize = m:GetBoundingBox()
+		local c = bbCF.Position
+		-- модель крутится вокруг своей оси (x = 0, z = 0), поэтому камера смотрит на эту ось
+		local radius = bbSize.Magnitude / 2 + Vector3.new(c.X, 0, c.Z).Magnitude
+		local look = Vector3.new(0, c.Y, 0)
+		local dist = radius / math.sin(math.rad(20)) * 1.05
+		local cam = make("Camera", { FieldOfView = 40 }, vp)
+		cam.CFrame = CFrame.lookAt(look + Vector3.new(0, dist * 0.3, dist * 0.95), look)
+		vp.CurrentCamera = cam
+		Decor.spinners[#Decor.spinners + 1] = { model = m, phase = #Decor.spinners * 0.9 }
+		return vp
+	end
+
+	-- крутим все модели в панели (вызывается каждый кадр, пока панель открыта)
+	function Decor.spin(dt)
+		Decor.angle += dt * 1.4
+		for _, s in ipairs(Decor.spinners) do
+			s.model:PivotTo(CFrame.Angles(0, Decor.angle + s.phase, 0))
+		end
+	end
+end
+
 -- опора под приподнятой рельсой (бетонный столб до земли)
 local function groundBelow(x, y, z)
 	local filter = { railsFolder, camera }
@@ -730,7 +980,7 @@ local function flashRail(target, color)
 	end)
 end
 
--- ===== Рельсы и таблички: создание / удаление / данные =====
+-- ===== Рельсы, таблички и украшения: создание / удаление / данные =====
 local function dropIn(m, cf)
 	local nv = Instance.new("NumberValue")
 	nv.Value = 1
@@ -751,9 +1001,10 @@ local function dropIn(m, cf)
 end
 
 -- заносим рельсу в списки: путь (по нему ездит вагонетка) и концы (для магнита и для переезда)
+-- у табличек и украшений пути нет
 local function registerPiece(m, kind, cf)
 	local info = { model = m, kind = kind, cf = cf }
-	if kind ~= "sign" then
+	if kind ~= "sign" and kind ~= "decor" then
 		local d = Geo.localData(kind)
 		local pts, tans, ups, cum = {}, {}, {}, { 0 }
 		for i, pt in ipairs(d.pts) do
@@ -781,11 +1032,16 @@ local function registerPiece(m, kind, cf)
 end
 
 -- yaw — поворот вокруг вертикали (у обычных рельс 0 / 90 / 180 / 270), pitch и roll — наклон и крен (у обычных 0);
--- free = true — свободная рельса (не привязана к клетке сетки)
-local function spawnPiece(kind, x, y, z, yaw, pitch, roll, free, animate, text)
-	local m = newRailModel(kind, "Rail")
+-- free = true — свободная рельса (не привязана к клетке сетки); text — текст таблички; deco — ключ украшения из MODELS
+local function spawnPiece(kind, x, y, z, yaw, pitch, roll, free, animate, text, deco)
+	local m
+	if kind == "decor" then
+		m = Decor.newModel(deco, "Rail")
+	else
+		m = newRailModel(kind, "Rail")
+	end
 	local cf = Geo.pieceCF(x, y, z, yaw, pitch, roll)
-	if kind ~= "loop" and math.abs(pitch) < 0.5 and math.abs(roll) < 0.5 then
+	if kind ~= "loop" and kind ~= "decor" and math.abs(pitch) < 0.5 and math.abs(roll) < 0.5 then
 		addSupport(m, x, y, z) -- опора до земли — только под ровными рельсами
 	end
 	m:SetAttribute("Rot", yaw)
@@ -796,6 +1052,8 @@ local function spawnPiece(kind, x, y, z, yaw, pitch, roll, free, animate, text)
 	m:SetAttribute("Pos", Vector3.new(x, y, z))
 	if kind == "sign" then
 		setSignText(m, text or "")
+	elseif kind == "decor" then
+		m:SetAttribute("Deco", deco)
 	end
 	m:PivotTo(cf)
 	m.Parent = railsFolder
@@ -846,6 +1104,8 @@ local function serialize()
 				}
 				if kind == "sign" then
 					entry[6] = m:GetAttribute("Text") or "" -- текст таблички
+				elseif kind == "decor" then
+					entry[6] = m:GetAttribute("Deco") or "gift" -- название украшения
 				end
 				if m:GetAttribute("Free") == true then
 					-- свободная рельса: ещё наклон, крен и метка «свободная»
@@ -884,13 +1144,15 @@ local function loadRails(rails)
 			and type(r[1]) == "number" and type(r[2]) == "number"
 			and type(r[3]) == "number" and type(r[4]) == "number"
 			and railCount < MAX_RAILS then
-			local free = (r[9] == 1)
-			if free or not tileAt[cellKey(r[1], r[3])] then
-				local kind = CODE_KIND[r[5]] or "straight"
+			local kind = CODE_KIND[r[5]] or "straight"
+			-- украшения всегда «свободные»; неизвестное название (нет в MODELS) — пропускаем
+			local free = (r[9] == 1) or kind == "decor"
+			local deco = (kind == "decor" and type(r[6]) == "string" and MODELS[r[6]]) and r[6] or nil
+			if (free or not tileAt[cellKey(r[1], r[3])]) and (kind ~= "decor" or deco) then
 				local text = (kind == "sign" and type(r[6]) == "string") and cleanSignText(r[6]) or nil
 				local pitch = (free and type(r[7]) == "number") and r[7] or 0
 				local roll = (free and type(r[8]) == "number") and r[8] or 0
-				spawnPiece(kind, r[1], r[2], r[3], r[4], pitch, roll, free, false, text)
+				spawnPiece(kind, r[1], r[2], r[3], r[4], pitch, roll, free, false, text, deco)
 			end
 		end
 		if i % 40 == 0 then
@@ -1365,13 +1627,23 @@ local tools = make("Frame", {
 	BackgroundTransparency = 1, LayoutOrder = 4, Visible = false,
 }, dock)
 make("UIListLayout", {
-	FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8),
+	FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
 	SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center,
 }, tools)
 
--- кнопки инструментов чуть уже, чтобы панель с табличками поместилась на экран
+-- кнопки инструментов чуть уже, чтобы панель с табличками и украшениями поместилась на экран
 local function toolButton(icon, text, order)
-	return dockButton(tools, icon, text, order, 62)
+	local b, ic, lb = dockButton(tools, icon, text, order, 58)
+	lb.TextSize = 10
+	return b, ic, lb
+end
+
+-- картинка вместо значка-эмодзи на кнопке
+function Decor.icon(btn, image)
+	return make("ImageLabel", {
+		AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 4), Size = UDim2.fromOffset(34, 34),
+		BackgroundTransparency = 1, Image = image, ScaleType = Enum.ScaleType.Fit,
+	}, btn)
 end
 
 local toolBtns = {}
@@ -1382,10 +1654,17 @@ toolBtns.erase = toolButton("❌", "Стереть", 4)
 toolBtns.cart = toolButton("🚃", "Вагонетка", 5)
 toolBtns.sign = toolButton("🪧", "Табличка", 6)
 toolBtns.edit = toolButton("✏️", "Текст", 7)
-local rotateBtn = toolButton("↻", "Повернуть", 8)
-local actionBtn, actionIcon, actionLbl = toolButton("✔", "Поставить", 9)
+do
+	local b, ic = toolButton("🎄", "Декор", 8) -- кнопка «Украшения» (картинка вместо значка)
+	ic.Text = ""
+	Decor.icon(b, IMG.DECOR)
+	Decor.btn = b
+end
+local rotateBtn = toolButton("↻", "Повернуть", 9)
+local actionBtn, actionIcon, actionLbl = toolButton("✔", "Поставить", 10)
 setBase(actionBtn, C.goodDark)
 actionBtn.Visible = UserInputService.TouchEnabled
+Decor.placeImg = Decor.icon(actionBtn, IMG.PLACE) -- картинка «Поставить» вместо галочки
 
 -- ===== Свободный режим: интерфейс =====
 local FUI = {}
@@ -1517,11 +1796,12 @@ local HINTS = {
 	straight = TOUCH_ONLY and "Тапни место → «Поставить»  ·  ▲▼ — высота" or "ЛКМ — поставить  ·  зажми и веди — цепочка  ·  R — повернуть  ·  E / Q — выше / ниже",
 	curve = TOUCH_ONLY and "Тапни место → «Поставить»  ·  поворот соединяет две соседние стороны" or "ЛКМ — поставить поворот  ·  R — повернуть  ·  E / Q — выше / ниже",
 	ramp = TOUCH_ONLY and "Уклон: нижний конец на текущей высоте. Подъём: ▲ после постановки" or "Уклон: нижний конец — на текущей высоте  ·  R — повернуть  ·  E / Q — выше / ниже",
-	erase = TOUCH_ONLY and "Тапни рельсу или табличку → «Удалить»" or "Наведи на рельсу или табличку и нажми ЛКМ  ·  зажми и води — стирать подряд",
+	erase = TOUCH_ONLY and "Тапни рельсу, табличку или украшение → «Удалить»" or "Наведи на рельсу, табличку или украшение и нажми ЛКМ  ·  зажми и води — стирать подряд",
 	cart = TOUCH_ONLY and "Тапни рельсу → «Поставить» вагонетку" or "Нажми на рельсу, чтобы поставить на неё вагонетку",
 	sign = TOUCH_ONLY and "Напиши текст в поле → тапни место → «Поставить»  ·  ↻ — повернуть" or "Напиши текст в поле выше  ·  ЛКМ — поставить  ·  R — повернуть  ·  E / Q — выше / ниже",
 	edit = TOUCH_ONLY and "Напиши новый текст → тапни табличку → «Применить»" or "Напиши новый текст в поле выше и нажми ЛКМ на табличке",
 	loop = "Мёртвая петля ставится только в свободном режиме",
+	decor = TOUCH_ONLY and "Выбери украшение → тапни место → «Поставить»  ·  ↻ — повернуть" or "ЛКМ — поставить  ·  R — повернуть  ·  E / Q — выше / ниже  ·  можно ставить и на рельсы",
 	-- подсказки свободного режима (для всего, что ставится); короткие, чтобы не залезать на боковые панели
 	free = {
 		place = TOUCH_ONLY and "Тапни место → «Поставить»  ·  внизу: наклон, крен, магнит" or "ЛКМ — поставить  ·  R поворот  ·  T наклон  ·  Y крен  ·  M магнит",
@@ -1529,10 +1809,12 @@ local HINTS = {
 		sign = TOUCH_ONLY and "Напиши текст → тапни место → «Поставить»" or "Текст в поле выше  ·  ЛКМ — поставить  ·  R / T / Y — повороты",
 	},
 }
+-- { значок, подпись, true = вместо значка показать картинку «Поставить» }
 local ACTIONS = {
-	straight = { "✔", "Поставить" }, curve = { "✔", "Поставить" }, ramp = { "✔", "Поставить" },
-	erase = { "🗑", "Удалить" }, cart = { "🚃", "Поставить" },
-	sign = { "✔", "Поставить" }, edit = { "✏️", "Применить" }, loop = { "✔", "Поставить" },
+	straight = { "✔", "Поставить", true }, curve = { "✔", "Поставить", true }, ramp = { "✔", "Поставить", true },
+	erase = { "🗑", "Удалить" }, cart = { "🚃", "Поставить", true },
+	sign = { "✔", "Поставить", true }, edit = { "✏️", "Применить" }, loop = { "✔", "Поставить", true },
+	decor = { "✔", "Поставить", true },
 }
 
 -- Поле для текста таблички (над подсказкой)
@@ -1587,11 +1869,60 @@ signBox.FocusLost:Connect(function()
 	end
 end)
 
--- когда над основной панелью висит панель свободного режима, подсказку и поле текста поднимаем выше
+-- когда над основной панелью висит панель свободного режима (или открыта панель украшений, она выше),
+-- подсказку и поле текста поднимаем выше
 local function layoutBottom()
-	local extra = FUI.dock.Visible and 80 or 0
+	local extra = 0
+	if Decor.open then
+		extra = 38
+	elseif FUI.dock.Visible then
+		extra = 80
+	end
 	hint.Position = UDim2.new(0.5, 0, 1, -106 - extra)
 	signPanel.Position = UDim2.new(0.5, 0, 1, -150 - extra)
+end
+
+-- ===== Панель украшений: заменяет нижнюю панель, пока открыта =====
+-- в каждой карточке крутится модель (ViewportFrame), а не картинка
+Decor.dock = make("Frame", {
+	AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -14),
+	Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.XY,
+	BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false,
+}, root)
+corner(Decor.dock, 18)
+stroke(Decor.dock, WHITE, 1, 0.88)
+pad(Decor.dock, 8)
+make("UIListLayout", {
+	FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8),
+	SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center,
+}, Decor.dock)
+
+Decor.backBtn = dockButton(Decor.dock, "◀", "Назад", 1, 62)
+for i, item in ipairs(Decor.list) do
+	local card = button(Decor.dock, { Size = UDim2.fromOffset(86, 100), LayoutOrder = 1 + i }, C.card)
+	stroke(card, C.accent, 2, 1)
+	Decor.addSpinner(card, item.key)
+	label(card, {
+		Position = UDim2.fromOffset(0, 72), Size = UDim2.new(1, 0, 0, 16),
+		Font = Enum.Font.GothamBold, TextSize = 12, Text = item.name,
+	})
+	label(card, {
+		Position = UDim2.fromOffset(0, 87), Size = UDim2.new(1, 0, 0, 12),
+		TextSize = 9, TextColor3 = C.sub, Text = item.tag,
+	})
+	Decor.cards[item.key] = card
+end
+make("Frame", {
+	Size = UDim2.fromOffset(2, 44), BackgroundColor3 = WHITE, BackgroundTransparency = 0.88,
+	BorderSizePixel = 0, LayoutOrder = 20,
+}, Decor.dock)
+Decor.rotateBtn = dockButton(Decor.dock, "↻", "Повернуть", 21, 62)
+do
+	local b, ic = dockButton(Decor.dock, "", "Поставить", 22, 62)
+	Decor.actionBtn = b
+	setBase(b, C.goodDark)
+	b.Visible = UserInputService.TouchEnabled
+	Decor.icon(b, IMG.PLACE)
 end
 
 -- Панель высоты (слева)
@@ -1887,8 +2218,13 @@ backdrop.Activated:Connect(function()
 end)
 
 -- ===== Призрак, подсветка под курсором, действия =====
-local function isPlacing(t)
+-- инструменты-рельсы (их можно наклонять, крутить в свободном режиме, они стыкуются магнитом)
+function Decor.railTool(t)
 	return t == "straight" or t == "curve" or t == "ramp" or t == "sign" or t == "loop"
+end
+
+local function isPlacing(t)
+	return Decor.railTool(t) or t == "decor"
 end
 
 -- инструменты, которые можно «тянуть» зажатой кнопкой мыши
@@ -1901,6 +2237,9 @@ local function isHoldTool(t)
 end
 
 local function hintFor(t)
+	if t == "decor" then
+		return HINTS.decor
+	end
 	if FM.on and isPlacing(t) then
 		return HINTS.free[t] or HINTS.free.place
 	end
@@ -1912,13 +2251,19 @@ local function destroyGhost()
 		ghost:Destroy()
 	end
 	ghost, ghostKind, ghostHL, ghostShown, ghostCF = nil, nil, nil, nil, nil
+	Decor.ghostKey = nil
 	FUI.mark.Parent = nil
 	FM.snapped = false
 end
 
 local function createGhost(kind)
 	destroyGhost()
-	ghost = newRailModel(kind, "Ghost")
+	if kind == "decor" then
+		ghost = Decor.newModel(Decor.key, "Ghost")
+		Decor.ghostKey = Decor.key
+	else
+		ghost = newRailModel(kind, "Ghost")
+	end
 	ghostKind = kind
 	if kind == "sign" then
 		setSignText(ghost, signText)
@@ -2009,35 +2354,52 @@ local function updateGhost(dt)
 		return
 	end
 
+	-- украшения ставятся на любую поверхность (в том числе на рельсы) и привязываются к сетке в 1 стад
+	local isDecor = ghostKind == "decor"
+	local gs = isDecor and Decor.GRID or (FM.on and FCFG.GRID or GRID)
+
 	-- точка под курсором: земля (уровень 0) или горизонтальная плоскость нужной высоты
 	local pos
 	if level == 0 then
 		-- на земле: луч до поверхности
-		local filter = { ghost, railsFolder }
+		local filter = { ghost }
+		if not isDecor then
+			table.insert(filter, railsFolder)
+		end
 		if player.Character then
 			table.insert(filter, player.Character)
 		end
 		rayParams.FilterDescendantsInstances = filter
 		local hit = workspace:Raycast(ray.Origin, ray.Direction * 600, rayParams)
 		if hit then
-			refY = hit.Position.Y
-			pos = Vector3.new(snap(hit.Position.X), hit.Position.Y + BASE_HEIGHT / 2, snap(hit.Position.Z))
+			if not hit.Instance:IsDescendantOf(railsFolder) then
+				refY = hit.Position.Y
+			end
+			local hy = isDecor and hit.Position.Y or (hit.Position.Y + BASE_HEIGHT / 2)
+			pos = Vector3.new(math.round(hit.Position.X / gs) * gs, hy, math.round(hit.Position.Z / gs) * gs)
 		end
 	else
 		-- в воздухе: луч до горизонтальной плоскости нужной высоты
-		local py = refY + BASE_HEIGHT / 2 + level * FM.levelStep()
+		-- (украшение стоит на верхней грани рельсы этого уровня)
+		local py = refY + (isDecor and BASE_HEIGHT or BASE_HEIGHT / 2) + level * FM.levelStep()
 		local dy = ray.Direction.Y
 		if math.abs(dy) > 1e-4 then
 			local t = (py - ray.Origin.Y) / dy
 			if t > 0 and t < 400 then
 				local h = ray.Origin + ray.Direction * t
-				pos = Vector3.new(snap(h.X), py, snap(h.Z))
+				pos = Vector3.new(math.round(h.X / gs) * gs, py, math.round(h.Z / gs) * gs)
 			end
 		end
 	end
 
 	local tcf, valid, snapEp
-	if FM.on then
+	if isDecor then
+		-- украшение: только поворот вокруг вертикали
+		if pos then
+			tcf = CFrame.new(pos) * CFrame.Angles(0, math.rad(rotTarget), 0)
+			valid = railCount < MAX_RAILS
+		end
+	elseif FM.on then
 		-- магнит: прилипаем к ближайшему свободному концу другой рельсы
 		if FM.magnet and ghostKind ~= "sign" then
 			snapEp = Geo.findMagnet(ray)
@@ -2103,10 +2465,11 @@ local function updateHover()
 			end
 		end
 	end
-	-- «Текст» работает только с табличками, «Вагонетка» — только с рельсами
+	-- «Текст» работает только с табличками, «Вагонетка» — только с рельсами (не с табличками и украшениями)
 	if rail then
-		local isSign = rail:GetAttribute("Kind") == "sign"
-		if (tool == "edit" and not isSign) or (tool == "cart" and isSign) then
+		local kind = rail:GetAttribute("Kind")
+		local isSign = kind == "sign"
+		if (tool == "edit" and not isSign) or (tool == "cart" and (isSign or kind == "decor")) then
 			rail = nil
 		end
 	end
@@ -2166,7 +2529,11 @@ local function doAction(fromHold)
 			return
 		end
 		local txt = finalSignText(signText)
-		if FM.on then
+		if tool == "decor" then
+			-- украшение: положение и поворот берём из призрака, наклона и крена нет
+			local x, y, z, yaw = Geo.decompose(ghostCF)
+			spawnPiece("decor", round2(x), round2(y), round2(z), round2(yaw), 0, 0, true, true, nil, Decor.key)
+		elseif FM.on then
 			-- свободная рельса: положение и углы берём прямо из призрака
 			local x, y, z, yaw, pitch, roll = Geo.decompose(ghostCF)
 			spawnPiece(tool, round2(x), round2(y), round2(z), round2(yaw), round2(pitch), round2(roll), true, true, txt)
@@ -2181,9 +2548,11 @@ local function doAction(fromHold)
 	end
 end
 
--- поворот вокруг вертикали: в обычном режиме по 90°, в свободном — на выбранный шаг
+-- поворот вокруг вертикали: у украшений по 15°, в обычном режиме по 90°, в свободном — на выбранный шаг
 local function rotate(dir)
-	if not FM.on then
+	if tool == "decor" then
+		rotTarget += Decor.TURN * dir
+	elseif not FM.on then
 		rotTarget += 90 * dir
 	elseif FM.snapped then
 		FM.rel.yaw = FM.wrap(FM.rel.yaw + FM.stepAngle() * dir)
@@ -2194,7 +2563,7 @@ end
 
 -- наклон (pitch) и крен (roll): «в воздухе» — относительно мира, у прилипшего призрака — относительно конца рельсы
 function FM.tilt(which, dir)
-	if not FM.on then
+	if not FM.on or tool == "decor" then
 		return
 	end
 	local o = FM.snapped and FM.rel or FM
@@ -2253,17 +2622,20 @@ local function setTool(t)
 	hpanel.Visible = placing
 	signPanel.Visible = (t == "sign" or t == "edit")
 	for _, b in ipairs(FUI.only) do
-		b.Visible = placing
+		b.Visible = placing and t ~= "decor" -- наклон, крен, магнит и т.д. — только для рельс
 	end
 	if placing then
-		if ghostKind ~= t then
+		if ghostKind ~= t or (t == "decor" and Decor.ghostKey ~= Decor.key) then
 			createGhost(t)
 		end
 	else
 		destroyGhost()
 	end
-	actionIcon.Text = ACTIONS[t][1]
-	actionLbl.Text = ACTIONS[t][2]
+	local act = ACTIONS[t]
+	actionIcon.Text = act[1]
+	actionLbl.Text = act[2]
+	Decor.placeImg.Visible = act[3] == true -- для «Поставить» вместо значка показываем картинку
+	actionIcon.Visible = act[3] ~= true
 	hint.Text = hintFor(t)
 end
 
@@ -2288,7 +2660,7 @@ local function setFreeMode(on)
 	ghostValid = false
 	FUI.refreshSwitch(true)
 	refreshFreeButtons()
-	FUI.dock.Visible = buildMode and on
+	FUI.dock.Visible = buildMode and on and not Decor.open
 	layoutBottom()
 	if buildMode then
 		setTool(tool)
@@ -2296,7 +2668,48 @@ local function setFreeMode(on)
 	toast(on and "🔓 Свободный режим: рельсы без правил" or "🔒 Обычный режим: рельсы по сетке", on and C.good or C.sub)
 end
 
+-- ===== Панель украшений: открыть / закрыть / выбрать =====
+-- когда панель открыта, обычная нижняя панель (и переключатель свободного режима) скрыты
+function Decor.setOpen(on)
+	if on == Decor.open then
+		return
+	end
+	Decor.open = on
+	dock.Visible = not on
+	Decor.dock.Visible = on
+	if on then
+		setSlotsOpen(false)
+		Decor.dock.Position = UDim2.new(0.5, 0, 1, 140)
+		tween(Decor.dock, 0.4, { Position = UDim2.new(0.5, 0, 1, -14) }, Enum.EasingStyle.Back)
+		FUI.card.Visible = false
+		FUI.dock.Visible = false
+		Decor.select(Decor.key) -- подсвечивает выбранную карточку и включает инструмент «украшение»
+	else
+		dock.Position = UDim2.new(0.5, 0, 1, 90)
+		tween(dock, 0.4, { Position = UDim2.new(0.5, 0, 1, -14) }, Enum.EasingStyle.Back)
+		FUI.card.Visible = buildMode
+		FUI.dock.Visible = buildMode and FM.on
+		if tool == "decor" then
+			setTool("straight")
+		end
+	end
+	layoutBottom()
+end
+
+function Decor.select(key)
+	Decor.key = key
+	for k, b in pairs(Decor.cards) do
+		setActive(b, k == key, C.accentDark)
+	end
+	if Decor.open then
+		setTool("decor") -- если украшение другое, призрак пересоздастся
+	end
+end
+
 local function setBuildMode(on)
+	if not on then
+		Decor.setOpen(false) -- выходим из строительства — возвращаем обычную панель
+	end
 	buildMode = on
 	allHL.Enabled = on
 	tools.Visible = on
@@ -2372,6 +2785,27 @@ FUI.step.Activated:Connect(function()
 	FM.cycleStep()
 end)
 
+-- кнопки украшений
+Decor.btn.Activated:Connect(function()
+	if buildMode then
+		Decor.setOpen(true)
+	end
+end)
+Decor.backBtn.Activated:Connect(function()
+	Decor.setOpen(false)
+end)
+Decor.rotateBtn.Activated:Connect(function()
+	rotate(1)
+end)
+Decor.actionBtn.Activated:Connect(function()
+	doAction(false)
+end)
+for key, card in pairs(Decor.cards) do
+	card.Activated:Connect(function()
+		Decor.select(key)
+	end)
+end
+
 -- ===== Ввод =====
 local TOOL_KEYS = {
 	[Enum.KeyCode.One] = "straight",
@@ -2406,28 +2840,28 @@ UserInputService.InputBegan:Connect(function(input, processed)
 			rotate(back)
 		end
 	elseif input.KeyCode == Enum.KeyCode.T then
-		if buildMode and isPlacing(tool) then
+		if buildMode and Decor.railTool(tool) then
 			FM.tilt("pitch", back)
 		end
 	elseif input.KeyCode == Enum.KeyCode.Y then
-		if buildMode and isPlacing(tool) then
+		if buildMode and Decor.railTool(tool) then
 			FM.tilt("roll", back)
 		end
 	elseif input.KeyCode == Enum.KeyCode.V then
-		if buildMode and FM.on and isPlacing(tool) then
+		if buildMode and FM.on and Decor.railTool(tool) then
 			FM.flip = not FM.flip
 			refreshFreeButtons()
 		end
 	elseif input.KeyCode == Enum.KeyCode.M then
-		if buildMode and FM.on then
+		if buildMode and FM.on and not Decor.open then
 			FM.toggleMagnet()
 		end
 	elseif input.KeyCode == Enum.KeyCode.N then
-		if buildMode and FM.on then
+		if buildMode and FM.on and not Decor.open then
 			FM.cycleStep()
 		end
 	elseif input.KeyCode == Enum.KeyCode.F then
-		if buildMode then
+		if buildMode and not Decor.open then
 			setFreeMode(not FM.on)
 		end
 	elseif input.KeyCode == Enum.KeyCode.E then
@@ -2446,9 +2880,16 @@ UserInputService.InputBegan:Connect(function(input, processed)
 		if data and Loading.done then -- пока идёт экран загрузки, строить нельзя
 			setBuildMode(not buildMode)
 		end
+	elseif input.KeyCode == Enum.KeyCode.Nine then
+		if buildMode then
+			Decor.setOpen(not Decor.open)
+		end
 	elseif TOOL_KEYS[input.KeyCode] and buildMode then
 		local name = TOOL_KEYS[input.KeyCode]
 		if name ~= "loop" or FM.on then
+			if Decor.open then
+				Decor.setOpen(false) -- выбрал другой инструмент — панель украшений закрываем
+			end
 			setTool(name)
 		end
 	end
@@ -2474,6 +2915,9 @@ player.CharacterRemoving:Connect(function()
 end)
 
 RunService.RenderStepped:Connect(function(dt)
+	if Decor.open then
+		Decor.spin(dt) -- модели в карточках крутятся
+	end
 	if buildMode then
 		if tool == "erase" or tool == "cart" or tool == "edit" then
 			updateHover()
