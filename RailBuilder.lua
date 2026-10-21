@@ -10,6 +10,8 @@
 -- поэтому каждое украшение собрано из деталей прямо в этом скрипте.
 -- Украшения сохраняются вместе с рельсами: в записи (6-е значение) лежит название украшения.
 --
+-- «РЫБИЙ ГЛАЗ» — когда едешь в вагонетке очень быстро, угол обзора камеры раскрывается шире (настройки в таблице FX).
+--
 -- ЭКРАН ЗАГРУЗКИ — при входе 5 секунд (настройки в таблице LOAD): картинка прилетает в центр,
 -- внизу появляется название, картинка пульсирует под музыку.
 --
@@ -58,7 +60,6 @@ local IMG = {
 local MODELS = {
 	pumpkin = 15429930446,     -- 🎃 Halloween: Тыква
 	hay = 5117398695,          -- 🎃 Halloween: Сено
-	xmascat = 123620200774954, -- 🎄 Merry Christmas: Новогодний кот
 	tree = 11720499037,        -- 🎄 Merry Christmas: Ёлка
 	gift = 332163549,          -- 🎄 Merry Christmas: Подарок
 }
@@ -68,7 +69,6 @@ local Decor = {
 	list = { -- порядок и подписи карточек (ключи — из MODELS)
 		{ key = "pumpkin", name = "Тыква", tag = "Halloween" },
 		{ key = "hay", name = "Сено", tag = "Halloween" },
-		{ key = "xmascat", name = "Кот", tag = "Новый год" },
 		{ key = "tree", name = "Ёлка", tag = "Новый год" },
 		{ key = "gift", name = "Подарок", tag = "Новый год" },
 	},
@@ -78,6 +78,16 @@ local Decor = {
 	key = "pumpkin",     -- выбранное украшение
 	ghostKey = nil,      -- какое украшение сейчас нарисовано призраком
 	builders = {}, spinners = {}, cards = {}, angle = 0,
+}
+
+-- эффект «рыбий глаз»: на большой скорости (когда ты сидишь в вагонетке) угол обзора камеры раскрывается шире
+local FX = {
+	START = 18, -- с какой скорости (студов/с) начинается эффект
+	FULL = 32,  -- на какой скорости эффект работает на полную
+	ADD = 40,   -- на сколько градусов раскрывается угол обзора (обычно 70 → 110)
+	IN = 3,     -- как быстро камера «разъезжается»
+	OUT = 2.5,  -- как быстро возвращается обратно
+	add = 0,    -- сколько градусов добавлено прямо сейчас
 }
 
 -- настройки экрана загрузки
@@ -831,49 +841,6 @@ do
 		ball(m, "Knot", Vector3.new(0.5, 0.5, 0.5), CFrame.new(0, 2.32, 0), ribbon, PLASTIC, false)
 	end
 
-	-- 🎄 Новогодний кот: сидит в шапке Деда Мороза и зелёном шарфе
-	B.xmascat = function(m)
-		local fur, white = Color3.fromRGB(232, 150, 70), Color3.fromRGB(250, 245, 238)
-		local red, green = Color3.fromRGB(205, 40, 48), Color3.fromRGB(46, 150, 84)
-		local dark = Color3.fromRGB(30, 30, 38)
-		local tail = {
-			Vector3.new(0.7, 0.4, 0.9), Vector3.new(1.05, 0.8, 1.15),
-			Vector3.new(1.15, 1.3, 1.1), Vector3.new(1.05, 1.75, 0.95),
-		}
-		for i, p in ipairs(tail) do
-			ball(m, "Tail", Vector3.new(0.55, 0.55, 0.55), CFrame.new(p), (i == #tail) and white or fur, FABRIC, false)
-		end
-		ball(m, "Body", Vector3.new(2, 2.1, 1.8), CFrame.new(0, 1.05, 0.1), fur, FABRIC, true)
-		ball(m, "Belly", Vector3.new(1.25, 1.35, 0.6), CFrame.new(0, 1.0, -0.62), white, FABRIC, false)
-		ball(m, "Head", Vector3.new(1.9, 1.6, 1.6), CFrame.new(0, 2.6, -0.05), fur, FABRIC, false)
-		for _, sx in ipairs({ -1, 1 }) do
-			ball(m, "Paw", Vector3.new(0.62, 0.5, 0.8), CFrame.new(sx * 0.5, 0.25, -0.7), white, FABRIC, false)
-			ball(m, "Foot", Vector3.new(0.7, 0.55, 0.9), CFrame.new(sx * 0.85, 0.28, 0.2), fur, FABRIC, false)
-			newPart(m, "Ear", Vector3.new(0.55, 0.55, 0.25),
-				CFrame.new(sx * 0.75, 3.2, -0.05) * CFrame.Angles(0, 0, math.rad(45 - sx * 15)), fur, FABRIC, false)
-			ball(m, "Eye", Vector3.new(0.26, 0.34, 0.14), CFrame.new(sx * 0.38, 2.7, -0.74), dark, PLASTIC, false)
-			ball(m, "Shine", Vector3.new(0.08, 0.1, 0.05), CFrame.new(sx * 0.34, 2.78, -0.8), white, PLASTIC, false)
-			for _, dy in ipairs({ -0.05, 0.08 }) do
-				newPart(m, "Whisker", Vector3.new(0.7, 0.03, 0.03),
-					CFrame.new(sx * 0.85, 2.48 + dy, -0.6) * CFrame.Angles(0, math.rad(sx * 20), math.rad(sx * dy * 120)),
-					dark, PLASTIC, false)
-			end
-		end
-		ball(m, "Nose", Vector3.new(0.22, 0.15, 0.14), CFrame.new(0, 2.5, -0.82), Color3.fromRGB(255, 150, 170), PLASTIC, false)
-		pillar(m, "Scarf", 0.35, 1.4, CFrame.new(0, 1.95, 0), green, FABRIC, false)
-		newPart(m, "ScarfEnd", Vector3.new(0.38, 1.0, 0.14), CFrame.new(0.45, 1.45, -0.78) * CFrame.Angles(0, 0, math.rad(-8)),
-			green, FABRIC, false)
-		-- шапка Деда Мороза (чуть заваливается назад)
-		pillar(m, "HatTrim", 0.3, 1.55, CFrame.new(0, 3.3, 0), white, FABRIC, false)
-		pillar(m, "Hat", 0.55, 1.25, CFrame.new(0, 3.7, 0), red, FABRIC, false)
-		pillar(m, "Hat", 0.5, 0.9, CFrame.new(0, 4.2, 0.1), red, FABRIC, false)
-		pillar(m, "Hat", 0.45, 0.55, CFrame.new(0, 4.62, 0.3), red, FABRIC, false)
-		ball(m, "Pom", Vector3.new(0.4, 0.4, 0.4), CFrame.new(0, 4.82, 0.55), white, FABRIC, false)
-		pcall(function()
-			m:ScaleTo(0.8) -- кот чуть меньше остальных украшений
-		end)
-	end
-
 	-- собрать украшение по ключу из MODELS
 	function Decor.newModel(key, name)
 		local m = Instance.new("Model")
@@ -1442,6 +1409,27 @@ local function stepCart(dt)
 			refreshCartHud()
 		end
 	end
+end
+
+-- ===== Камера на большой скорости: «рыбий глаз» =====
+-- Камера не отъезжает назад, а раскрывает угол обзора (FieldOfView): края «растягиваются», как у объектива «рыбий глаз».
+-- Эффект работает, пока ты сидишь в вагонетке; когда замедляешься или слезаешь — угол плавно возвращается.
+function FX.update(dt)
+	local target = 0
+	if cart and cart.riding then
+		target = FX.ADD * math.clamp((cart.speed - FX.START) / (FX.FULL - FX.START), 0, 1)
+	end
+	if target == 0 and FX.add < 0.05 then
+		if FX.add ~= 0 then
+			camera.FieldOfView = math.clamp(camera.FieldOfView - FX.add, 1, 120)
+			FX.add = 0
+		end
+		return
+	end
+	local base = camera.FieldOfView - FX.add -- обычный угол обзора (вдруг его поменял другой скрипт)
+	local k = (target > FX.add) and FX.IN or FX.OUT
+	FX.add += (target - FX.add) * (1 - math.exp(-dt * k))
+	camera.FieldOfView = math.clamp(base + FX.add, 1, 120)
 end
 
 -- ===== Интерфейс =====
@@ -2929,6 +2917,7 @@ RunService.RenderStepped:Connect(function(dt)
 		end
 	end
 	stepCart(dt)
+	FX.update(dt)
 end)
 
 -- ===== Старт: загрузка сохранения (если есть серверный скрипт) =====
