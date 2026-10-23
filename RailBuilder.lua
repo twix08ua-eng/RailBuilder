@@ -8,6 +8,8 @@
 -- на землю, на рельсы или на нужную высоту (E / Q). R — повернуть (шаг 15°), кнопка «Назад» — вернуть обычную панель.
 -- Модели по ID (таблица MODELS) из LocalScript загрузить нельзя (InsertService работает только на сервере),
 -- поэтому каждое украшение собрано из деталей прямо в этом скрипте.
+-- Украшений 19: Halloween (тыква, сено, надгробие, привидение, череп, котёл), Новый год (ёлка, подарок, снеговик, леденец),
+-- природа (куст, гриб, камень, цветы, костёр) и разное (забор, бочка, ящик, фонарь). Список листается стрелками по бокам.
 -- Украшения сохраняются вместе с рельсами: в записи (6-е значение) лежит название украшения.
 --
 -- «РЫБИЙ ГЛАЗ» — когда едешь в вагонетке очень быстро, угол обзора камеры раскрывается шире (настройки в таблице FX).
@@ -56,7 +58,7 @@ local IMG = {
 	DECOR = "rbxassetid://136476233036438", -- кнопка «Украшения»
 }
 
--- ID моделей украшений из каталога
+-- ID моделей из каталога (для справки: из LocalScript модели по ID не загрузить, поэтому все украшения собраны в скрипте)
 local MODELS = {
 	pumpkin = 15429930446,     -- 🎃 Halloween: Тыква
 	hay = 5117398695,          -- 🎃 Halloween: Сено
@@ -66,11 +68,26 @@ local MODELS = {
 
 -- всё, что связано с украшениями, лежит в одной таблице (в скрипте и так много переменных)
 local Decor = {
-	list = { -- порядок и подписи карточек (ключи — из MODELS)
+	list = { -- порядок и подписи карточек (для каждого ключа есть сборщик в Decor.builders)
 		{ key = "pumpkin", name = "Тыква", tag = "Halloween" },
 		{ key = "hay", name = "Сено", tag = "Halloween" },
+		{ key = "tombstone", name = "Надгробие", tag = "Halloween" },
+		{ key = "ghost", name = "Привидение", tag = "Halloween" },
+		{ key = "skull", name = "Череп", tag = "Halloween" },
+		{ key = "cauldron", name = "Котёл", tag = "Halloween" },
 		{ key = "tree", name = "Ёлка", tag = "Новый год" },
 		{ key = "gift", name = "Подарок", tag = "Новый год" },
+		{ key = "snowman", name = "Снеговик", tag = "Новый год" },
+		{ key = "candycane", name = "Леденец", tag = "Новый год" },
+		{ key = "bush", name = "Куст", tag = "Природа" },
+		{ key = "mushroom", name = "Гриб", tag = "Природа" },
+		{ key = "rock", name = "Камень", tag = "Природа" },
+		{ key = "flowers", name = "Цветы", tag = "Природа" },
+		{ key = "campfire", name = "Костёр", tag = "Природа" },
+		{ key = "fence", name = "Забор", tag = "Разное" },
+		{ key = "barrel", name = "Бочка", tag = "Разное" },
+		{ key = "crate", name = "Ящик", tag = "Разное" },
+		{ key = "lamp", name = "Фонарь", tag = "Разное" },
 	},
 	GRID = 1,            -- шаг привязки украшений (студы)
 	TURN = 15,           -- на сколько градусов поворачивает R
@@ -725,6 +742,7 @@ end
 do
 	local PLASTIC, FABRIC = Enum.Material.SmoothPlastic, Enum.Material.Fabric
 	local WOOD, NEON = Enum.Material.Wood, Enum.Material.Neon
+	local SLATE, METAL, GRASS = Enum.Material.Slate, Enum.Material.Metal, Enum.Material.Grass
 	local B = Decor.builders
 
 	-- эллипсоид (шар, растянутый до нужного размера)
@@ -841,7 +859,260 @@ do
 		ball(m, "Knot", Vector3.new(0.5, 0.5, 0.5), CFrame.new(0, 2.32, 0), ribbon, PLASTIC, false)
 	end
 
-	-- собрать украшение по ключу из MODELS
+	-- 🎃 Надгробие: плита с круглым верхом, крестом и холмиком земли
+	B.tombstone = function(m)
+		local stone, dark = Color3.fromRGB(122, 126, 134), Color3.fromRGB(58, 60, 68)
+		newPart(m, "Slab", Vector3.new(2.6, 0.35, 1.6), CFrame.new(0, 0.175, 0), Color3.fromRGB(96, 100, 108), SLATE, true)
+		newPart(m, "Stone", Vector3.new(1.7, 1.7, 0.45), CFrame.new(0, 1.2, 0), stone, SLATE, true)
+		local top = newPart(m, "StoneTop", Vector3.new(0.45, 1.7, 1.7), CFrame.new(0, 2.05, 0) * CFrame.Angles(0, math.rad(90), 0),
+			stone, SLATE, true)
+		top.Shape = Enum.PartType.Cylinder -- круглый верх плиты
+		newPart(m, "CrossV", Vector3.new(0.2, 1.1, 0.1), CFrame.new(0, 1.75, -0.24), dark, SLATE, false)
+		newPart(m, "CrossH", Vector3.new(0.75, 0.2, 0.1), CFrame.new(0, 2.05, -0.24), dark, SLATE, false)
+		ball(m, "Mound", Vector3.new(2.2, 0.6, 1.5), CFrame.new(0, 0.1, -1.2), Color3.fromRGB(82, 60, 40), Enum.Material.Ground, false)
+	end
+
+	-- 🎃 Привидение: полупрозрачное, с поднятыми «руками» и бледным светом
+	B.ghost = function(m)
+		local white, dark = Color3.fromRGB(244, 248, 255), Color3.fromRGB(28, 30, 40)
+		pillar(m, "Body", 1.7, 1.9, CFrame.new(0, 1.1, 0), white, PLASTIC, true)
+		local head = ball(m, "Head", Vector3.new(1.9, 1.9, 1.9), CFrame.new(0, 2.1, 0), white, PLASTIC, false)
+		for k = 0, 5 do -- «рваный» подол
+			local a = math.rad(k * 60)
+			ball(m, "Hem", Vector3.new(0.75, 0.75, 0.75), CFrame.new(math.cos(a) * 0.78, 0.32, math.sin(a) * 0.78), white, PLASTIC, false)
+		end
+		for _, sx in ipairs({ -1, 1 }) do
+			ball(m, "Arm", Vector3.new(0.55, 1.1, 0.5), CFrame.new(sx * 1.1, 1.5, -0.1) * CFrame.Angles(0, 0, math.rad(sx * -25)),
+				white, PLASTIC, false)
+			ball(m, "Eye", Vector3.new(0.3, 0.5, 0.2), CFrame.new(sx * 0.38, 2.25, -0.84), dark, PLASTIC, false)
+		end
+		ball(m, "Mouth", Vector3.new(0.45, 0.55, 0.2), CFrame.new(0, 1.7, -0.84), dark, PLASTIC, false)
+		make("PointLight", { Color = Color3.fromRGB(170, 205, 255), Range = 9, Brightness = 0.7 }, head)
+		for _, d in ipairs(m:GetChildren()) do
+			if d:IsA("BasePart") and d.Color == white then
+				d.Transparency = 0.1
+			end
+		end
+	end
+
+	-- 🎃 Череп: черепушка с челюстью, глазницами, носом и зубами
+	B.skull = function(m)
+		local bone, dark = Color3.fromRGB(236, 230, 212), Color3.fromRGB(24, 22, 26)
+		ball(m, "Cranium", Vector3.new(2.0, 1.75, 1.95), CFrame.new(0, 1.5, 0), bone, PLASTIC, true)
+		ball(m, "Jaw", Vector3.new(1.4, 0.8, 1.25), CFrame.new(0, 0.5, -0.12), bone, PLASTIC, true)
+		for _, sx in ipairs({ -1, 1 }) do
+			ball(m, "Socket", Vector3.new(0.56, 0.66, 0.4), CFrame.new(sx * 0.46, 1.5, -0.8), dark, PLASTIC, false)
+		end
+		ball(m, "Nose", Vector3.new(0.28, 0.42, 0.26), CFrame.new(0, 1.1, -0.9), dark, PLASTIC, false)
+		for i = 0, 3 do
+			newPart(m, "Tooth", Vector3.new(0.24, 0.34, 0.16), CFrame.new(-0.4 + i * 0.27, 0.78, -0.66), bone, PLASTIC, false)
+		end
+		for i = 0, 2 do -- тёмные щели между зубами
+			newPart(m, "Gap", Vector3.new(0.03, 0.34, 0.17), CFrame.new(-0.265 + i * 0.27, 0.78, -0.66), dark, PLASTIC, false)
+		end
+	end
+
+	-- 🎃 Котёл: чёрный горшок с кипящим зелёным зельем (светится)
+	B.cauldron = function(m)
+		local iron, green = Color3.fromRGB(40, 42, 48), Color3.fromRGB(120, 255, 90)
+		ball(m, "Pot", Vector3.new(3.0, 2.0, 3.0), CFrame.new(0, 0.95, 0), iron, METAL, true)
+		pillar(m, "Rim", 0.3, 2.5, CFrame.new(0, 1.85, 0), iron, METAL, true)
+		local brew = pillar(m, "Brew", 0.1, 2.0, CFrame.new(0, 2.03, 0), green, NEON, false)
+		make("PointLight", { Color = green, Range = 10, Brightness = 1 }, brew)
+		for _, p in ipairs({ { 0.5, 0.3 }, { -0.6, -0.2 }, { 0.1, -0.7 } }) do
+			ball(m, "Bubble", Vector3.new(0.4, 0.4, 0.4), CFrame.new(p[1], 2.1, p[2]), green, NEON, false)
+		end
+		for _, sx in ipairs({ -1, 1 }) do
+			ball(m, "Handle", Vector3.new(0.45, 0.45, 0.45), CFrame.new(sx * 1.35, 1.5, 0), iron, METAL, false)
+		end
+	end
+
+	-- 🎄 Снеговик: три шара, шляпа, морковка, шарф и руки-палки
+	B.snowman = function(m)
+		local snow, coal, red = Color3.fromRGB(246, 250, 255), Color3.fromRGB(28, 28, 34), Color3.fromRGB(200, 40, 48)
+		ball(m, "Bottom", Vector3.new(2.1, 1.9, 2.1), CFrame.new(0, 0.95, 0), snow, PLASTIC, true)
+		ball(m, "Middle", Vector3.new(1.55, 1.45, 1.55), CFrame.new(0, 2.5, 0), snow, PLASTIC, true)
+		ball(m, "Head", Vector3.new(1.15, 1.15, 1.15), CFrame.new(0, 3.55, 0), snow, PLASTIC, false)
+		ball(m, "Nose", Vector3.new(0.18, 0.18, 0.6), CFrame.new(0, 3.5, -0.72), Color3.fromRGB(255, 140, 30), PLASTIC, false)
+		for _, sx in ipairs({ -1, 1 }) do
+			ball(m, "Eye", Vector3.new(0.14, 0.14, 0.1), CFrame.new(sx * 0.21, 3.68, -0.51), coal, PLASTIC, false)
+			newPart(m, "Arm", Vector3.new(1.4, 0.09, 0.09), CFrame.new(sx * 1.25, 2.85, 0) * CFrame.Angles(0, 0, math.rad(sx * 25)),
+				Color3.fromRGB(96, 66, 40), WOOD, false)
+		end
+		for i = -2, 2 do -- улыбка из угольков
+			ball(m, "Mouth", Vector3.new(0.09, 0.09, 0.08), CFrame.new(i * 0.1, 3.3 + 0.025 * i * i, -0.51), coal, PLASTIC, false)
+		end
+		for _, b in ipairs({ { 2.85, -0.68 }, { 2.5, -0.75 }, { 2.15, -0.68 } }) do
+			ball(m, "Button", Vector3.new(0.18, 0.18, 0.14), CFrame.new(0, b[1], b[2]), coal, PLASTIC, false)
+		end
+		pillar(m, "HatBrim", 0.1, 1.5, CFrame.new(0, 4.08, 0), coal, PLASTIC, false)
+		pillar(m, "Hat", 0.75, 0.9, CFrame.new(0, 4.5, 0), coal, PLASTIC, false)
+		pillar(m, "HatBand", 0.16, 0.93, CFrame.new(0, 4.2, 0), red, FABRIC, false)
+		pillar(m, "Scarf", 0.3, 1.2, CFrame.new(0, 3.0, 0), red, FABRIC, false)
+		newPart(m, "ScarfEnd", Vector3.new(0.3, 0.8, 0.1), CFrame.new(0.4, 2.6, -0.7) * CFrame.Angles(0, 0, math.rad(-8)),
+			red, FABRIC, false)
+	end
+
+	-- 🎄 Леденец: красно-белая палочка с изогнутой ручкой
+	B.candycane = function(m)
+		local red, white = Color3.fromRGB(220, 38, 50), Color3.fromRGB(250, 250, 252)
+		for k = 0, 5 do
+			pillar(m, "Stripe", 0.46, 0.5, CFrame.new(0, 0.23 + k * 0.45, 0), (k % 2 == 0) and red or white, PLASTIC, k == 0)
+		end
+		for t = 0, 5 do -- загнутая ручка: полукруг из шариков
+			local a = math.rad(180 - t * 36)
+			ball(m, "Hook", Vector3.new(0.52, 0.52, 0.52), CFrame.new(0.65 + math.cos(a) * 0.65, 2.7 + math.sin(a) * 0.65, 0),
+				(t % 2 == 0) and red or white, PLASTIC, false)
+		end
+	end
+
+	-- 🌿 Куст: несколько зелёных «облачков» и красные ягоды
+	B.bush = function(m)
+		local greens = { Color3.fromRGB(52, 120, 46), Color3.fromRGB(64, 140, 52), Color3.fromRGB(44, 104, 42) }
+		local blobs = { -- { x, y, z, ширина, высота, глубина }
+			{ 0, 0.9, 0, 2.7, 1.9, 2.5 }, { -1.0, 0.7, 0.2, 1.9, 1.5, 1.9 }, { 1.0, 0.7, -0.1, 2.0, 1.6, 1.9 },
+			{ 0.2, 1.3, 0.3, 1.9, 1.5, 1.7 }, { -0.4, 0.6, -0.8, 1.6, 1.2, 1.4 },
+		}
+		for i, b in ipairs(blobs) do
+			ball(m, "Leaves", Vector3.new(b[4], b[5], b[6]), CFrame.new(b[1], b[2], b[3]), greens[i % 3 + 1], GRASS, i == 1)
+		end
+		local rng = Random.new(5)
+		for _ = 1, 10 do
+			local x, z = rng:NextNumber(-1.2, 1.2), rng:NextNumber(-1, 1)
+			local k = 1 - (x / 1.35) ^ 2 - (z / 1.25) ^ 2
+			if k > 0.2 then
+				ball(m, "Berry", Vector3.new(0.22, 0.22, 0.22), CFrame.new(x, 0.95 + 0.95 * math.sqrt(k), z),
+					Color3.fromRGB(210, 40, 50), PLASTIC, false)
+			end
+		end
+	end
+
+	-- 🌿 Гриб: большой мухомор и два маленьких рядом
+	B.mushroom = function(m)
+		local cream, red, spot = Color3.fromRGB(240, 228, 205), Color3.fromRGB(205, 45, 52), Color3.fromRGB(255, 250, 245)
+		local function shroom(x, z, h, w) -- ножка, шляпка и белые пятнышки
+			pillar(m, "Stem", h, w * 0.3, CFrame.new(x, h / 2, z), cream, PLASTIC, true)
+			local capH = w * 0.55
+			local cy = h + capH * 0.2
+			ball(m, "Cap", Vector3.new(w, capH, w), CFrame.new(x, cy, z), red, PLASTIC, false)
+			for _, s in ipairs({ { 0.25, 0.1 }, { -0.2, 0.3 }, { 0.05, -0.32 }, { -0.3, -0.12 } }) do
+				local px, pz = s[1] * w, s[2] * w
+				local k = 1 - (px / (w / 2)) ^ 2 - (pz / (w / 2)) ^ 2
+				ball(m, "Spot", Vector3.new(w * 0.17, w * 0.07, w * 0.17),
+					CFrame.new(x + px, cy + capH / 2 * math.sqrt(k), z + pz), spot, PLASTIC, false)
+			end
+		end
+		shroom(0, 0, 1.3, 2.6)
+		shroom(1.7, 0.6, 0.7, 1.4)
+		shroom(-1.5, 0.9, 0.5, 1.0)
+	end
+
+	-- 🌿 Камень: три валуна разного размера
+	B.rock = function(m)
+		local g1, g2, g3 = Color3.fromRGB(118, 120, 128), Color3.fromRGB(104, 106, 114), Color3.fromRGB(132, 134, 140)
+		ball(m, "Rock", Vector3.new(3.0, 1.9, 2.4), CFrame.new(0, 0.8, 0) * CFrame.Angles(0.05, math.rad(20), 0.08), g1, SLATE, true)
+		ball(m, "Rock", Vector3.new(1.9, 1.2, 1.6), CFrame.new(1.5, 0.45, 0.7) * CFrame.Angles(0, math.rad(-30), -0.1), g2, SLATE, true)
+		ball(m, "Rock", Vector3.new(1.5, 1.0, 1.4), CFrame.new(-1.4, 0.35, -0.6) * CFrame.Angles(0.1, math.rad(50), 0), g3, SLATE, true)
+	end
+
+	-- 🌿 Цветы: полянка с пятью разноцветными цветами
+	B.flowers = function(m)
+		ball(m, "Patch", Vector3.new(3.2, 0.3, 2.8), CFrame.new(0, 0.05, 0), Color3.fromRGB(70, 130, 56), GRASS, false)
+		local stem = Color3.fromRGB(60, 130, 52)
+		local petals = {
+			Color3.fromRGB(240, 70, 90), Color3.fromRGB(255, 160, 200), Color3.fromRGB(170, 110, 240),
+			Color3.fromRGB(250, 250, 255), Color3.fromRGB(255, 190, 60),
+		}
+		local spots = { { -0.9, 0.3, 1.2 }, { 0.2, -0.6, 1.5 }, { 0.9, 0.4, 1.0 }, { -0.2, 0.8, 1.3 }, { 0.5, -0.05, 1.7 } }
+		for i, f in ipairs(spots) do
+			local x, z, h = f[1], f[2], f[3]
+			pillar(m, "Stem", h, 0.1, CFrame.new(x, h / 2, z), stem, PLASTIC, false)
+			ball(m, "Leaf", Vector3.new(0.45, 0.08, 0.2), CFrame.new(x + 0.2, h * 0.4, z) * CFrame.Angles(0, 0, math.rad(25)),
+				stem, PLASTIC, false)
+			for k = 0, 4 do
+				local a = math.rad(k * 72)
+				ball(m, "Petal", Vector3.new(0.34, 0.1, 0.34), CFrame.new(x + math.cos(a) * 0.24, h, z + math.sin(a) * 0.24),
+					petals[i], PLASTIC, false)
+			end
+			ball(m, "Center", Vector3.new(0.26, 0.16, 0.26), CFrame.new(x, h + 0.04, z), Color3.fromRGB(255, 210, 60), PLASTIC, false)
+		end
+	end
+
+	-- 🌿 Костёр: круг камней, шалашик из брёвен, огонь и тёплый свет
+	B.campfire = function(m)
+		local logC, stone = Color3.fromRGB(96, 64, 38), Color3.fromRGB(120, 122, 130)
+		for k = 0, 7 do
+			local a = math.rad(k * 45)
+			ball(m, "Stone", Vector3.new(0.75, 0.5, 0.75), CFrame.new(math.cos(a) * 1.7, 0.2, math.sin(a) * 1.7), stone, SLATE, k % 2 == 0)
+		end
+		for k = 0, 5 do
+			local a = math.rad(k * 60)
+			local mid = Vector3.new(math.cos(a) * 0.65, 0.7, math.sin(a) * 0.65)
+			newPart(m, "Log", Vector3.new(0.4, 0.4, 2.0), CFrame.lookAt(mid, Vector3.new(0, 1.85, 0)), logC, WOOD, false)
+		end
+		ball(m, "Flame", Vector3.new(1.0, 1.4, 1.0), CFrame.new(0, 1.0, 0), Color3.fromRGB(255, 140, 30), NEON, false)
+		local core = ball(m, "Flame", Vector3.new(0.65, 1.1, 0.65), CFrame.new(0, 1.05, 0), Color3.fromRGB(255, 205, 70), NEON, false)
+		ball(m, "Flame", Vector3.new(0.3, 0.7, 0.3), CFrame.new(0, 1.0, 0), Color3.fromRGB(255, 240, 160), NEON, false)
+		make("PointLight", { Color = Color3.fromRGB(255, 160, 70), Range = 20, Brightness = 1.6 }, core)
+		make("Fire", { Size = 4, Heat = 6 }, core)
+	end
+
+	-- 🧱 Забор: пять досок с остриями и две перекладины (по ширине одной клетки)
+	B.fence = function(m)
+		local paint, rail = Color3.fromRGB(238, 230, 210), Color3.fromRGB(150, 110, 70)
+		for _, y in ipairs({ 0.65, 1.45 }) do
+			newPart(m, "Rail", Vector3.new(4.0, 0.25, 0.14), CFrame.new(0, y, 0.16), rail, WOOD, false)
+		end
+		for i = -2, 2 do
+			local x = i * 0.8
+			newPart(m, "Picket", Vector3.new(0.4, 2.0, 0.18), CFrame.new(x, 1.0, 0), paint, WOOD, i % 2 == 0)
+			newPart(m, "PicketTip", Vector3.new(0.28, 0.28, 0.18), CFrame.new(x, 2.05, 0) * CFrame.Angles(0, 0, math.rad(45)),
+				paint, WOOD, false)
+		end
+	end
+
+	-- 🧱 Бочка: доски, три железных обруча и крышка
+	B.barrel = function(m)
+		local wood, hoop = Color3.fromRGB(140, 96, 56), Color3.fromRGB(58, 60, 68)
+		pillar(m, "Barrel", 2.2, 1.8, CFrame.new(0, 1.1, 0), wood, WOOD, true)
+		for _, y in ipairs({ 0.3, 1.1, 1.9 }) do
+			pillar(m, "Hoop", 0.14, 1.88, CFrame.new(0, y, 0), hoop, METAL, false)
+		end
+		pillar(m, "Lid", 0.1, 1.5, CFrame.new(0, 2.2, 0), Color3.fromRGB(170, 124, 76), WOOD, false)
+	end
+
+	-- 🧱 Ящик: деревянный куб с рамой и диагональными планками
+	B.crate = function(m)
+		local plank, frame = Color3.fromRGB(176, 130, 80), Color3.fromRGB(120, 82, 48)
+		newPart(m, "Box", Vector3.new(2.0, 2.0, 2.0), CFrame.new(0, 1.0, 0), plank, Enum.Material.WoodPlanks, true)
+		for _, s in ipairs({ -1, 1 }) do
+			for _, t in ipairs({ -1, 1 }) do
+				newPart(m, "Post", Vector3.new(0.22, 2.06, 0.22), CFrame.new(s * 0.95, 1.0, t * 0.95), frame, WOOD, false)
+			end
+			for _, y in ipairs({ 0.1, 1.9 }) do
+				newPart(m, "BarX", Vector3.new(2.06, 0.2, 0.2), CFrame.new(0, y, s * 0.95), frame, WOOD, false)
+				newPart(m, "BarZ", Vector3.new(0.2, 0.2, 2.06), CFrame.new(s * 0.95, y, 0), frame, WOOD, false)
+			end
+			newPart(m, "BraceF", Vector3.new(0.2, 2.2, 0.08), CFrame.new(0, 1.0, s * 1.02) * CFrame.Angles(0, 0, math.rad(45)),
+				frame, WOOD, false)
+			newPart(m, "BraceS", Vector3.new(0.08, 2.2, 0.2), CFrame.new(s * 1.02, 1.0, 0) * CFrame.Angles(math.rad(45), 0, 0),
+				frame, WOOD, false)
+		end
+	end
+
+	-- 🧱 Фонарь: чугунный столб с тёплой лампой (по-настоящему светит)
+	B.lamp = function(m)
+		local iron, glow = Color3.fromRGB(44, 46, 54), Color3.fromRGB(255, 222, 150)
+		pillar(m, "Base", 0.5, 0.95, CFrame.new(0, 0.25, 0), iron, METAL, true)
+		pillar(m, "Post", 3.6, 0.3, CFrame.new(0, 2.0, 0), iron, METAL, true)
+		pillar(m, "Plate", 0.15, 0.95, CFrame.new(0, 3.85, 0), iron, METAL, false)
+		local bulb = ball(m, "Bulb", Vector3.new(0.9, 1.1, 0.9), CFrame.new(0, 4.4, 0), glow, NEON, false)
+		pillar(m, "Cap", 0.2, 1.1, CFrame.new(0, 5.05, 0), iron, METAL, false)
+		pillar(m, "CapTop", 0.2, 0.5, CFrame.new(0, 5.25, 0), iron, METAL, false)
+		make("PointLight", { Color = Color3.fromRGB(255, 214, 140), Range = 26, Brightness = 1.8 }, bulb)
+	end
+
+	-- собрать украшение по ключу
 	function Decor.newModel(key, name)
 		local m = Instance.new("Model")
 		m.Name = name or "Decor"
@@ -1114,7 +1385,7 @@ local function loadRails(rails)
 			local kind = CODE_KIND[r[5]] or "straight"
 			-- украшения всегда «свободные»; неизвестное название (нет в MODELS) — пропускаем
 			local free = (r[9] == 1) or kind == "decor"
-			local deco = (kind == "decor" and type(r[6]) == "string" and MODELS[r[6]]) and r[6] or nil
+			local deco = (kind == "decor" and type(r[6]) == "string" and Decor.builders[r[6]]) and r[6] or nil
 			if (free or not tileAt[cellKey(r[1], r[3])]) and (kind ~= "decor" or deco) then
 				local text = (kind == "sign" and type(r[6]) == "string") and cleanSignText(r[6]) or nil
 				local pitch = (free and type(r[7]) == "number") and r[7] or 0
@@ -1862,7 +2133,7 @@ end)
 local function layoutBottom()
 	local extra = 0
 	if Decor.open then
-		extra = 38
+		extra = 46
 	elseif FUI.dock.Visible then
 		extra = 80
 	end
@@ -1886,8 +2157,21 @@ make("UIListLayout", {
 }, Decor.dock)
 
 Decor.backBtn = dockButton(Decor.dock, "◀", "Назад", 1, 62)
+Decor.prevBtn = button(Decor.dock, { Size = UDim2.fromOffset(30, 100), LayoutOrder = 2, Text = "‹", TextSize = 28 }, C.card)
+-- карточек много, поэтому они лежат в прокручиваемом списке: тяни пальцем / мышью или жми стрелки по бокам
+Decor.scroll = make("ScrollingFrame", {
+	Size = UDim2.fromOffset(86 * 4.5 + 8 * 4, 108), LayoutOrder = 3,
+	BackgroundTransparency = 1, BorderSizePixel = 0, ScrollingDirection = Enum.ScrollingDirection.X,
+	ScrollBarThickness = 4, ScrollBarImageColor3 = C.sub,
+	CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.X,
+}, Decor.dock)
+pad(Decor.scroll, 3)
+make("UIListLayout", {
+	FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder,
+}, Decor.scroll)
+Decor.nextBtn = button(Decor.dock, { Size = UDim2.fromOffset(30, 100), LayoutOrder = 4, Text = "›", TextSize = 28 }, C.card)
 for i, item in ipairs(Decor.list) do
-	local card = button(Decor.dock, { Size = UDim2.fromOffset(86, 100), LayoutOrder = 1 + i }, C.card)
+	local card = button(Decor.scroll, { Size = UDim2.fromOffset(86, 100), LayoutOrder = i }, C.card)
 	stroke(card, C.accent, 2, 1)
 	Decor.addSpinner(card, item.key)
 	label(card, {
@@ -2781,6 +3065,17 @@ Decor.btn.Activated:Connect(function()
 end)
 Decor.backBtn.Activated:Connect(function()
 	Decor.setOpen(false)
+end)
+-- стрелки по бокам листают список украшений (примерно на три карточки)
+function Decor.scrollBy(dx)
+	local sf = Decor.scroll
+	tween(sf, 0.25, { CanvasPosition = Vector2.new(math.max(0, sf.CanvasPosition.X + dx), 0) })
+end
+Decor.prevBtn.Activated:Connect(function()
+	Decor.scrollBy(-282)
+end)
+Decor.nextBtn.Activated:Connect(function()
+	Decor.scrollBy(282)
 end)
 Decor.rotateBtn.Activated:Connect(function()
 	rotate(1)
