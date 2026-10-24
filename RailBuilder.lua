@@ -16,7 +16,9 @@
 -- появится картинка; зажми E на 0.1 с — откроется. Пока на базе есть хоть одна дверь, там живут NPC (таблица Home):
 -- гуляют внутри, иногда выходят на улицу и возвращаются, машут тебе (шанс 40%), прыгают от радости у двери
 -- и пугаются, только если ты появился совсем резко (потом смотрят на тебя, смеются и уходят гулять или к двери).
--- Жители — R6, кожа бежевая, футболки из списка Home.SHIRTS.
+-- Жители — R6, кожа бежевая, футболки из Home.SHIRTS, штаны из Home.PANTS (к штанам Sleep — футболка Sleep).
+-- ЧУЖИЕ РЯДОМ: если близко чужой NPC (модель с Humanoid, не игрок и не житель) — жители пугаются, вскрикивают и убегают от него.
+-- Если близко объект с AnimationController — паника: все бегут вдвое быстрее к двери (снаружи заходят внутрь, внутри жмутся у двери).
 -- Среди жителей бывают малыши: ростом поменьше, голос повыше, прыгают от радости чаще (настройки SMALL_* в таблице Home).
 -- Здороваясь, житель машет рукой, говорит «Hi!» (облачко над головой) и проигрывает звук Home.SOUNDS.wave.
 --
@@ -150,6 +152,10 @@ local Home = {
 	SCARE_DIST = 11,      -- ближе этого расстояния можно испугаться (студы)
 	SCARE_SPEED = 30,     -- так быстро (студов/с) нужно к жителю приблизиться, чтобы он испугался
 	SCARE_COOLDOWN = 40,  -- не чаще, чем раз в столько секунд
+	FEAR_RADIUS = 18,     -- чужой NPC (модель с Humanoid, не игрок) ближе этого расстояния пугает жителей — они убегают
+	FEAR_COOLDOWN = 15,   -- не чаще, чем раз в столько секунд
+	ALARM_RADIUS = 22,    -- объект с AnimationController ближе этого — паника: бегут вдвое быстрее к двери
+	FAST = 2,             -- во сколько раз быстрее бегут при испуге и панике
 	SOUNDS = {
 		wave = "rbxassetid://130780071265356",   -- здоровается: машет рукой и говорит «Hi!»
 		joy = "rbxassetid://130926713428015",  -- прыгает от радости
@@ -162,6 +168,12 @@ local Home = {
 	SKIN = Color3.fromRGB(235, 205, 165), -- кожа (голова и руки) всегда бежевая
 	SHIRTS = { -- футболки жителей (ID из каталога): McDonalds, Mellstroy, Red Bakon Boi, без названия
 		90787762613314, 16350897656, 5171326293, 93665648144394,
+	},
+	PANTS = { -- штаны жителей (ID из каталога); shirt — какая футболка полагается именно к этим штанам
+		{ id = 10174536646 }, -- Poor
+		{ id = 8592697362 },  -- Bacon
+		{ id = 1923579875, shirt = 6297766966 }, -- Sleep (к ним — футболка Sleep)
+		{ id = 14285822913 }, -- Kit bermuda black
 	},
 	shirtNext = math.random(0, 3),
 	GREET = "Hi! 👋",      -- облачко над головой, когда здоровается
@@ -1326,6 +1338,10 @@ end
 Home.folder = make("Folder", { Name = "MyResidents_LocalOnly" }, workspace)
 Home.rayParams = RaycastParams.new()
 Home.rayParams.FilterType = Enum.RaycastFilterType.Exclude
+Home.overlap = OverlapParams.new()
+Home.overlap.FilterType = Enum.RaycastFilterType.Exclude
+Home.overlap.MaxParts = 80
+Home.kindCache = setmetatable({}, { __mode = "k" }) -- что за модель рядом (человек / объект с аниматором / ничего), помним 4 секунды
 
 -- на сколько градусов поворачивает кнопка R у выбранного украшения (стены и двери — по 90°)
 function Decor.turnStep()
@@ -1670,11 +1686,11 @@ function Home.walkTo(n, target, stopDist, timeout)
 	local t0 = os.clock()
 	local lastPos, lastMove = root.Position, t0
 	local nextMove = t0
-	hum.WalkSpeed = n.speed or Home.WALK
 	while true do
 		if not Home.alive(n) then
 			return "dead"
 		end
+		hum.WalkSpeed = (n.speed or Home.WALK) * (n.fast and Home.FAST or 1) -- в панике и при испуге бегут быстрее
 		if n.event then
 			hum:MoveTo(root.Position)
 			return "event"
@@ -1754,10 +1770,145 @@ function Home.scared(n)
 	n.lock = false
 end
 
+-- ----- Чужие рядом: чужой NPC пугает, объект с AnimationController вызывает панику -----
+-- что это за модель: "npc" — человек (Humanoid), "obj" — объект с AnimationController, "none" — просто модель
+function Home.kindOf(model, now)
+	local c = Home.kindCache[model]
+	if c and now - c.at < 4 then
+		return c.kind, c.hum
+	end
+	local hum = model:FindFirstChildOfClass("Humanoid")
+	local kind = "none"
+	if hum then
+		kind = "npc"
+	elseif model:FindFirstChildOfClass("AnimationController")
+		or (model.PrimaryPart and model.PrimaryPart:FindFirstChildOfClass("AnimationController")) then
+		kind = "obj"
+	end
+	Home.kindCache[model] = { kind = kind, hum = hum, at = now }
+	return kind, hum
+end
+
+-- ищем рядом чужих: позиция ближайшего чужого NPC (FEAR_RADIUS) и ближайшего объекта с AnimationController (ALARM_RADIUS)
+function Home.scan(n, now)
+	local filter = { Home.folder, camera, railsFolder }
+	for _, pl in ipairs(Players:GetPlayers()) do
+		if pl.Character then
+			filter[#filter + 1] = pl.Character -- игроки — это не «чужие NPC»
+		end
+	end
+	Home.overlap.FilterDescendantsInstances = filter
+	local center = n.root.Position
+	local radius = math.max(Home.FEAR_RADIUS, Home.ALARM_RADIUS)
+	local parts = workspace:GetPartBoundsInRadius(center, radius, Home.overlap)
+	local checked = {}
+	local npcPos, npcDist, objPos, objDist
+	for _, part in ipairs(parts) do
+		-- AnimationController может лежать прямо в детали
+		if part:FindFirstChildOfClass("AnimationController") and not part:FindFirstAncestorOfClass("Model") then
+			local dist = (part.Position - center).Magnitude
+			if dist <= Home.ALARM_RADIUS and (not objDist or dist < objDist) then
+				objPos, objDist = part.Position, dist
+			end
+		end
+		local inst = part.Parent
+		for _ = 1, 6 do
+			if not inst or inst == workspace then
+				break
+			end
+			if inst:IsA("Model") and not checked[inst] then
+				checked[inst] = true
+				local kind, hum = Home.kindOf(inst, now)
+				if kind ~= "none" then
+					local pos = inst:GetPivot().Position
+					local dist = (pos - center).Magnitude
+					if kind == "npc" and hum.Health > 0 and dist <= Home.FEAR_RADIUS and (not npcDist or dist < npcDist) then
+						npcPos, npcDist = pos, dist
+					elseif kind == "obj" and dist <= Home.ALARM_RADIUS and (not objDist or dist < objDist) then
+						objPos, objDist = pos, dist
+					end
+				end
+			end
+			inst = inst.Parent
+		end
+	end
+	return npcPos, objPos
+end
+
+-- куда бежать от угрозы: в сторону от неё, по прямой без преград
+function Home.fleePoint(n, threat)
+	local p = n.root.Position
+	local away = Vector3.new(p.X - threat.X, 0, p.Z - threat.Z)
+	if away.Magnitude < 0.1 then
+		away = Vector3.new(math.random() - 0.5, 0, math.random() - 0.5)
+	end
+	away = away.Unit
+	local baseY = n.door.pos0.Y
+	for _, deg in ipairs({ 0, 40, -40, 80, -80, 120, -120 }) do
+		local dir = CFrame.Angles(0, math.rad(deg), 0):VectorToWorldSpace(away)
+		local g, inst = Home.groundAt(p + dir * 14)
+		if g and math.abs(g.Y - baseY) < 4 and not Home.blocked(inst) and Home.clear(p, g) then
+			return g
+		end
+	end
+	return nil
+end
+
+-- чужой NPC рядом: испугался, вскрикнул и убежал от него (вдвое быстрее)
+function Home.fear(n, from)
+	n.lock = true
+	n.lastFear = os.clock()
+	local hum, root = n.hum, n.root
+	hum:MoveTo(root.Position)
+	Home.say(n, "scare")
+	Home.armsUp(n, true)
+	hum.Jump = true
+	task.wait(0.5)
+	Home.armsUp(n, false)
+	n.fast = true
+	local t0 = os.clock()
+	while Home.alive(n) and os.clock() - t0 < 7 do
+		local threat = n.threat or from
+		if (root.Position - threat).Magnitude > Home.FEAR_RADIUS + 8 then
+			break -- убежал достаточно далеко
+		end
+		local target = Home.fleePoint(n, threat) or ((n.place == "in") and n.door.inGate or n.door.outGate)
+		Home.walkTo(n, target, 2, 3)
+	end
+	n.fast = n.panic == true
+	if n.place == "out" then
+		n.wantDoor = true -- если был на улице, потом возвращается к двери
+	end
+	n.lock = false
+end
+
+-- паника (рядом объект с AnimationController): бегом к двери — снаружи заходят внутрь, а те, кто уже внутри, жмутся у двери
+function Home.panicStep(n)
+	local d = n.door
+	if n.place == "out" then
+		local r = Home.walkTo(n, d.outGate, 1.5, 14)
+		if r == "ok" then
+			n.lock = true
+			if Home.alive(n) and Home.passDoor(n, d.outGate, d.inGate) then
+				n.place = "in"
+				n.nextOut = os.clock() + math.random(12, 25)
+			end
+			n.lock = false
+		elseif r == "stuck" then
+			task.wait(0.5)
+		end
+	else
+		Home.walkTo(n, d.inGate, 1.5, 10)
+		Home.pause(n, 0.4)
+	end
+end
+
 function Home.react(n)
 	local ev = n.event
 	n.event = nil
-	if ev.type == "scare" then
+	if ev.type == "fear" then
+		Home.fear(n, ev.from)
+	elseif ev.type == "scare" then
 		Home.scared(n)
 	elseif ev.type == "wave" then
 		n.lock = true
@@ -1826,7 +1977,7 @@ function Home.returnHome(n)
 	end
 	n.lock = true
 	Home.face(n, d.pos0)
-	if math.random() < (n.small and math.min(1, Home.JOY_CHANCE + 0.25) or Home.JOY_CHANCE) then
+	if not n.panic and math.random() < (n.small and math.min(1, Home.JOY_CHANCE + 0.25) or Home.JOY_CHANCE) then
 		Home.joy(n)
 	end
 	if Home.alive(n) and Home.passDoor(n, d.outGate, d.inGate) then
@@ -1894,10 +2045,13 @@ end
 
 function Home.run(n)
 	while Home.alive(n) do
+		n.fast = n.panic == true -- в панике бегут вдвое быстрее
 		if n.event then
 			Home.react(n)
 		elseif not n.door.model.Parent then
 			Home.rehome(n)
+		elseif n.panic then
+			Home.panicStep(n)
 		elseif n.place == "in" then
 			Home.insideStep(n)
 		else
@@ -1944,12 +2098,27 @@ function Home.perceive(n, now, dt)
 	elseif unseenFor > 1.5 then
 		n.seen = false
 	end
+	-- чужие рядом? проверяем раз в полсекунды
+	if now >= n.nextScan then
+		n.nextScan = now + 0.5
+		local npcPos, objPos = Home.scan(n, now)
+		n.threat = npcPos -- позиция чужого NPC (или nil)
+		if objPos then
+			n.panicUntil = now + 3 -- паника длится, пока объект рядом, и ещё 3 секунды
+		end
+	end
+	n.panic = now < n.panicUntil
 	if n.lock or n.event then
+		return
+	end
+	-- чужой NPC рядом → пугаются и убегают
+	if n.threat and not n.panic and now - n.lastFear > Home.FEAR_COOLDOWN then
+		n.event = { type = "fear", from = n.threat }
 		return
 	end
 	-- испуг — только если ты очень резко оказался рядом: подлетел на огромной скорости (телепорт, быстрая вагонетка)
 	-- или вынырнул из-за угла после долгого отсутствия. Обычная ходьба и бег не пугают.
-	if visible and dist < Home.SCARE_DIST and now - n.lastScare > Home.SCARE_COOLDOWN and now - n.bornAt > 8 then
+	if visible and not n.panic and dist < Home.SCARE_DIST and now - n.lastScare > Home.SCARE_COOLDOWN and now - n.bornAt > 8 then
 		local sudden = pclosing > Home.SCARE_SPEED
 			or (unseenFor > 3 and dist < Home.SCARE_DIST * 0.6 and pclosing > Home.SCARE_SPEED * 0.55)
 		if sudden then
@@ -1961,7 +2130,7 @@ function Home.perceive(n, now, dt)
 		end
 	end
 	-- заметил тебя → с шансом 40% здоровается: машет рукой и говорит «Hi!»
-	if visible and not wasSeen and now - n.lastWave > Home.WAVE_COOLDOWN then
+	if visible and not n.panic and not wasSeen and now - n.lastWave > Home.WAVE_COOLDOWN then
 		n.lastWave = now
 		if math.random() < Home.WAVE_CHANCE then
 			n.event = { type = "wave" }
@@ -1972,12 +2141,13 @@ end
 -- ----- Жители: появление и исчезновение -----
 function Home.newModel(i)
 	local rng = Random.new(os.time() + i * 101)
-	local pants = {
+	local legColors = {
 		Color3.fromRGB(50, 56, 80), Color3.fromRGB(70, 60, 50), Color3.fromRGB(40, 40, 46), Color3.fromRGB(90, 100, 120),
 	}
-	local pantsColor = pants[rng:NextInteger(1, #pants)]
+	local legColor = legColors[rng:NextInteger(1, #legColors)] -- цвет ног (виден, если штаны не загрузятся)
+	local pants = Home.PANTS[rng:NextInteger(1, #Home.PANTS)]
 	Home.shirtNext = Home.shirtNext % #Home.SHIRTS + 1 -- футболки по очереди, чтобы у соседей были разные
-	local shirtId = Home.SHIRTS[Home.shirtNext]
+	local shirtId = pants.shirt or Home.SHIRTS[Home.shirtNext] -- к некоторым штанам футболка полагается своя
 
 	local function build(asTShirt)
 		local desc = Instance.new("HumanoidDescription")
@@ -1985,8 +2155,9 @@ function Home.newModel(i)
 		desc.LeftArmColor = Home.SKIN
 		desc.RightArmColor = Home.SKIN
 		desc.TorsoColor = Color3.fromRGB(245, 245, 245) -- фон под принтом футболки
-		desc.LeftLegColor = pantsColor
-		desc.RightLegColor = pantsColor
+		desc.LeftLegColor = legColor
+		desc.RightLegColor = legColor
+		desc.Pants = pants.id
 		if asTShirt then
 			desc.GraphicTShirt = shirtId
 		else
@@ -2120,6 +2291,7 @@ function Home.spawnNpc(index)
 		local n = {
 			model = model, hum = hum, root = root, door = door, alive = true, place = "in",
 			sounds = {}, anim = {}, seen = false, lastSeen = -99, lastWave = -99, lastScare = -99,
+			nextScan = 0, panicUntil = 0, lastFear = -99, panic = false, fast = false,
 			nextOut = os.clock() + math.random(8, 20), backAt = 0,
 			speed = Home.WALK * (0.85 + math.random() * 0.4) * (small and 1.1 or 1), bornAt = os.clock(),
 			small = small, scale = scale, pitch = small and (1 + (1 - scale) * 0.7) or (0.92 + math.random() * 0.12), -- у малышей голос повыше
