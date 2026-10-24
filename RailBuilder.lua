@@ -16,6 +16,7 @@
 -- появится картинка; зажми E на 0.1 с — откроется. Пока на базе есть хоть одна дверь, там живут NPC (таблица Home):
 -- гуляют внутри, иногда выходят на улицу и возвращаются, машут тебе (шанс 40%), прыгают от радости у двери
 -- и пугаются, только если ты появился совсем резко (потом смотрят на тебя, смеются и уходят гулять или к двери).
+-- Жители — R6, кожа бежевая, футболки из списка Home.SHIRTS.
 -- Среди жителей бывают малыши: ростом поменьше, голос повыше, прыгают от радости чаще (настройки SMALL_* в таблице Home).
 -- Здороваясь, житель машет рукой, говорит «Hi!» (облачко над головой) и проигрывает звук Home.SOUNDS.wave.
 --
@@ -150,14 +151,19 @@ local Home = {
 	SCARE_SPEED = 30,     -- так быстро (студов/с) нужно к жителю приблизиться, чтобы он испугался
 	SCARE_COOLDOWN = 40,  -- не чаще, чем раз в столько секунд
 	SOUNDS = {
-		wave = "rbxassetid://1307800712653",   -- здоровается: машет рукой и говорит «Hi!»
+		wave = "rbxassetid://130780071265356",   -- здоровается: машет рукой и говорит «Hi!»
 		joy = "rbxassetid://130926713428015",  -- прыгает от радости
 		scare = "rbxassetid://75049633628598", -- испугался
 		laugh = "rbxassetid://102769336849011", -- смеётся
 	},
-	ANIMS = { -- стандартные анимации Roblox для R15
-		idle = 507766388, walk = 507777826, wave = 507770239, cheer = 507770677, laugh = 507770818,
+	ANIMS = { -- стандартные анимации Roblox для R6
+		idle = 180435571, walk = 180426354, wave = 128777973, cheer = 129423030, laugh = 129423131,
 	},
+	SKIN = Color3.fromRGB(235, 205, 165), -- кожа (голова и руки) всегда бежевая
+	SHIRTS = { -- футболки жителей (ID из каталога): McDonalds, Mellstroy, Red Bakon Boi, без названия
+		90787762613314, 16350897656, 5171326293, 93665648144394,
+	},
+	shirtNext = math.random(0, 3),
 	GREET = "Hi! 👋",      -- облачко над головой, когда здоровается
 	doors = {}, npcs = {}, spawning = 0, acc = 0, lastSync = 0, failedAt = -100,
 }
@@ -1596,15 +1602,14 @@ function Home.face(n, pos)
 	n.hum.AutoRotate = true
 end
 
--- руки вверх (испуг): поворачиваем «плечи» скелета
+-- руки вверх (испуг): поворачиваем «плечи» R6-скелета
 function Home.armsUp(n, on)
 	n.c0 = n.c0 or {}
-	for _, name in ipairs({ "RightShoulder", "LeftShoulder" }) do
+	for _, name in ipairs({ "Right Shoulder", "Left Shoulder" }) do
 		local j = n.model:FindFirstChild(name, true)
 		if j and j:IsA("Motor6D") then
 			n.c0[name] = n.c0[name] or j.C0
-			local sign = (name == "RightShoulder") and 1 or -1
-			j.C0 = on and (n.c0[name] * CFrame.Angles(0, 0, math.rad(sign * 150))) or n.c0[name]
+			j.C0 = on and (n.c0[name] * CFrame.Angles(math.rad(-150), 0, 0)) or n.c0[name]
 		end
 	end
 end
@@ -1628,7 +1633,7 @@ function Home.bubble(n, text)
 		return
 	end
 	local gui = make("BillboardGui", {
-		Adornee = head, Size = UDim2.fromOffset(120, 48), StudsOffset = Vector3.new(0, 2.8 * n.scale + 0.2, 0),
+		Adornee = head, Size = UDim2.fromOffset(120, 48), StudsOffset = Vector3.new(0, 2.1 * n.scale + 0.3, 0),
 		AlwaysOnTop = true, LightInfluence = 0, MaxDistance = 90,
 	}, n.model)
 	local box = make("Frame", {
@@ -1967,35 +1972,48 @@ end
 -- ----- Жители: появление и исчезновение -----
 function Home.newModel(i)
 	local rng = Random.new(os.time() + i * 101)
-	local function pick(list)
-		return list[rng:NextInteger(1, #list)]
-	end
-	local skin = pick({
-		Color3.fromRGB(255, 204, 153), Color3.fromRGB(234, 184, 146), Color3.fromRGB(198, 134, 66),
-		Color3.fromRGB(124, 92, 70), Color3.fromRGB(240, 213, 190),
-	})
-	local shirt = pick({
-		Color3.fromRGB(215, 60, 70), Color3.fromRGB(70, 130, 220), Color3.fromRGB(70, 180, 110),
-		Color3.fromRGB(240, 190, 60), Color3.fromRGB(150, 90, 210), Color3.fromRGB(240, 130, 50),
-	})
-	local pants = pick({
+	local pants = {
 		Color3.fromRGB(50, 56, 80), Color3.fromRGB(70, 60, 50), Color3.fromRGB(40, 40, 46), Color3.fromRGB(90, 100, 120),
-	})
-	local desc = Instance.new("HumanoidDescription")
-	desc.HeadColor = skin
-	desc.TorsoColor = shirt
-	desc.LeftArmColor = shirt
-	desc.RightArmColor = shirt
-	desc.LeftLegColor = pants
-	desc.RightLegColor = pants
-	local ok, model = pcall(function()
-		return Players:CreateHumanoidModelFromDescription(desc, Enum.HumanoidRigType.R15)
-	end)
-	desc:Destroy()
-	if ok and typeof(model) == "Instance" then
-		return model
+	}
+	local pantsColor = pants[rng:NextInteger(1, #pants)]
+	Home.shirtNext = Home.shirtNext % #Home.SHIRTS + 1 -- футболки по очереди, чтобы у соседей были разные
+	local shirtId = Home.SHIRTS[Home.shirtNext]
+
+	local function build(asTShirt)
+		local desc = Instance.new("HumanoidDescription")
+		desc.HeadColor = Home.SKIN
+		desc.LeftArmColor = Home.SKIN
+		desc.RightArmColor = Home.SKIN
+		desc.TorsoColor = Color3.fromRGB(245, 245, 245) -- фон под принтом футболки
+		desc.LeftLegColor = pantsColor
+		desc.RightLegColor = pantsColor
+		if asTShirt then
+			desc.GraphicTShirt = shirtId
+		else
+			desc.Shirt = shirtId
+		end
+		local ok, model = pcall(function()
+			return Players:CreateHumanoidModelFromDescription(desc, Enum.HumanoidRigType.R6)
+		end)
+		desc:Destroy()
+		if ok and typeof(model) == "Instance" then
+			return model
+		end
+		return nil
 	end
-	return nil
+
+	local model = build(true)
+	if model and not model:FindFirstChildOfClass("ShirtGraphic") then
+		-- футболка не появилась: вдруг это обычная рубашка — пробуем так
+		local alt = build(false)
+		if alt and alt:FindFirstChildOfClass("Shirt") then
+			model:Destroy()
+			model = alt
+		elseif alt then
+			alt:Destroy()
+		end
+	end
+	return model
 end
 
 function Home.loadAnims(n)
