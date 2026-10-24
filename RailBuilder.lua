@@ -12,6 +12,9 @@
 -- природа (куст, гриб, камень, цветы, костёр) и разное (забор, бочка, ящик, фонарь). Список листается стрелками по бокам.
 -- Украшения сохраняются вместе с рельсами: в записи (6-е значение) лежит название украшения.
 --
+-- КАРТОЧКА ИГРОКА — после загрузки сверху падает карточка: аватарка твоего скина, ник и регион (флаг-смайлик).
+-- Потом выезжают панели (карточка остаётся поверх них), а через пару секунд карточка уменьшается и уезжает в угол (настройки в таблице Profile).
+--
 -- «РЫБИЙ ГЛАЗ» — когда едешь в вагонетке очень быстро, угол обзора камеры раскрывается шире (настройки в таблице FX).
 --
 -- ЭКРАН ЗАГРУЗКИ — при входе 5 секунд (настройки в таблице LOAD): картинка прилетает в центр,
@@ -105,6 +108,13 @@ local FX = {
 	IN = 3,     -- как быстро камера «разъезжается»
 	OUT = 2.5,  -- как быстро возвращается обратно
 	add = 0,    -- сколько градусов добавлено прямо сейчас
+}
+
+-- карточка игрока после загрузки (аватарка скина, ник, регион-флаг)
+local Profile = {
+	HOLD = 2.2,   -- сколько секунд карточка висит по центру, пока появляются панели
+	KEEP = true,  -- true: потом уменьшается в правый верхний угол и остаётся поверх панелей; false: исчезает
+	SMALL = 0.5,  -- во сколько раз уменьшается в углу
 }
 
 -- настройки экрана загрузки
@@ -305,7 +315,7 @@ end
 -- Картинка плавно прилетает в центр, ниже появляется название, а сама картинка пульсирует под музыку.
 -- Громкость музыки читаем через PlaybackLoudness; пока музыка не заиграла (или не загрузилась),
 -- картинка пульсирует по таймеру, чтобы экран не выглядел мёртвым.
-local Loading = { done = false }
+local Loading = { done = false, uiReady = false }
 do
 	local vp = camera.ViewportSize
 	local imgSize = math.clamp(math.min(vp.X, vp.Y) * 0.36, 120, 260)
@@ -1823,6 +1833,150 @@ toast = function(text, color)
 	end)
 end
 
+-- ===== Карточка игрока: после загрузки «падает» сверху (аватарка скина, ник и регион смайликом) =====
+-- Потом появляются панели, а карточка остаётся перед ними (поверх), и чуть позже уезжает в угол.
+do
+	local card = make("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0, -150),
+		Size = UDim2.fromOffset(300, 112), BackgroundColor3 = C.panel, BorderSizePixel = 0,
+		Visible = false, ZIndex = 30, Rotation = -6, -- ZIndex 30 — выше всех панелей
+	}, root)
+	corner(card, 20)
+	stroke(card, C.accent, 2, 0.15)
+	Profile.scale = make("UIScale", {}, card)
+
+	-- круглая аватарка (голова твоего скина)
+	local ring = make("Frame", {
+		Position = UDim2.fromOffset(14, 14), Size = UDim2.fromOffset(84, 84),
+		BackgroundColor3 = C.card, BorderSizePixel = 0,
+	}, card)
+	corner(ring, 42)
+	stroke(ring, C.accent, 3, 0)
+	Profile.avatarImg = make("ImageLabel", {
+		Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Image = "", ScaleType = Enum.ScaleType.Crop,
+	}, ring)
+	corner(Profile.avatarImg, 42)
+
+	-- ник и логин
+	label(card, {
+		Position = UDim2.fromOffset(112, 14), Size = UDim2.fromOffset(174, 28), Font = Enum.Font.GothamBold, TextSize = 22,
+		TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = player.DisplayName,
+	})
+	label(card, {
+		Position = UDim2.fromOffset(112, 42), Size = UDim2.fromOffset(174, 18), TextSize = 13, TextColor3 = C.sub,
+		TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = "@" .. player.Name,
+	})
+
+	-- регион: флаг-смайлик
+	local chip = make("Frame", {
+		Position = UDim2.fromOffset(112, 66), Size = UDim2.fromOffset(54, 32),
+		BackgroundColor3 = C.card, BorderSizePixel = 0,
+	}, card)
+	corner(chip, 16)
+	Profile.flagL = label(chip, { Size = UDim2.fromScale(1, 1), TextSize = 22, Text = "🌍" })
+	label(card, {
+		Position = UDim2.fromOffset(174, 66), Size = UDim2.fromOffset(110, 32), TextSize = 12, TextColor3 = C.sub,
+		TextXAlignment = Enum.TextXAlignment.Left, Text = "регион",
+	})
+	Profile.card = card
+end
+
+-- «RU» → 🇷🇺 (флаг собирается из двух «региональных» символов Unicode)
+function Profile.flag(code)
+	if type(code) ~= "string" or #code ~= 2 then
+		return "🌍"
+	end
+	local a, b = code:upper():byte(1, 2)
+	if a < 65 or a > 90 or b < 65 or b > 90 then
+		return "🌍"
+	end
+	return utf8.char(0x1F1E6 + a - 65, 0x1F1E6 + b - 65)
+end
+
+-- код региона игрока (например "RU"); если Roblox не ответил — берём регион из языка Roblox ("ru-ru" → "RU")
+function Profile.fetchRegion()
+	local service = game:GetService("LocalizationService")
+	local ok, code = pcall(function()
+		return service:GetCountryRegionForPlayerAsync(player)
+	end)
+	if ok and type(code) == "string" and #code == 2 then
+		return code
+	end
+	local ok2, locale = pcall(function()
+		return service.RobloxLocaleId
+	end)
+	if ok2 and type(locale) == "string" then
+		return locale:match("[-_](%a%a)$")
+	end
+	return nil
+end
+
+-- картинка головы скина; миниатюра иногда ещё не готова — пробуем несколько раз
+function Profile.fetchAvatar()
+	local last
+	for _ = 1, 8 do
+		local ok, content, ready = pcall(function()
+			return Players:GetUserThumbnailAsync(player.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
+		end)
+		if ok and content then
+			last = content
+			if ready then
+				break
+			end
+		end
+		task.wait(0.5)
+	end
+	return last
+end
+
+-- грузим аватарку и регион заранее (пока идёт экран загрузки)
+Profile.pending = 2
+function Profile.load()
+	task.spawn(function()
+		local img = Profile.fetchAvatar()
+		if img then
+			Profile.avatarImg.Image = img
+		end
+		Profile.pending -= 1
+	end)
+	task.spawn(function()
+		Profile.flagL.Text = Profile.flag(Profile.fetchRegion())
+		Profile.pending -= 1
+	end)
+end
+task.spawn(Profile.load)
+
+-- карточка падает сверху в центр экрана; возвращает управление, когда приземлилась
+function Profile.drop()
+	local t0 = os.clock()
+	while Profile.pending > 0 and os.clock() - t0 < 2 do -- чуть подождём, если аватарка ещё не загрузилась
+		task.wait(0.1)
+	end
+	local card = Profile.card
+	card.Position = UDim2.new(0.5, 0, 0, -150)
+	card.Rotation = -6
+	Profile.scale.Scale = 1
+	card.Visible = true
+	tween(card, 1.2, { Position = UDim2.new(0.5, 0, 0.5, -20) }, Enum.EasingStyle.Bounce)
+	tween(card, 0.9, { Rotation = 0 }, Enum.EasingStyle.Quint)
+	task.wait(1.2)
+end
+
+-- потом карточка уменьшается и уезжает в правый верхний угол (остаётся поверх панелей) или исчезает
+function Profile.settle()
+	local card = Profile.card
+	if Profile.KEEP then
+		local s = Profile.SMALL
+		tween(Profile.scale, 0.7, { Scale = s }, Enum.EasingStyle.Quint)
+		tween(card, 0.7, { Position = UDim2.new(1, -(14 + 300 * s / 2), 0, 10 + 112 * s / 2) }, Enum.EasingStyle.Quint)
+	else
+		local tw = tween(card, 0.5, { Position = UDim2.new(0.5, 0, 0, -170), Rotation = 6 }, Enum.EasingStyle.Back, Enum.EasingDirection.In)
+		tw.Completed:Once(function()
+			card.Visible = false
+		end)
+	end
+end
+
 -- Плашка активного слота (сверху по центру)
 local pill = button(root, {
 	AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 10),
@@ -3160,7 +3314,7 @@ UserInputService.InputBegan:Connect(function(input, processed)
 			setLevel(0)
 		end
 	elseif input.KeyCode == Enum.KeyCode.B then
-		if data and Loading.done then -- пока идёт экран загрузки, строить нельзя
+		if data and Loading.uiReady then -- пока идут загрузка и появление панелей, строить нельзя
 			setBuildMode(not buildMode)
 		end
 	elseif input.KeyCode == Enum.KeyCode.Nine then
@@ -3244,10 +3398,20 @@ task.spawn(function()
 		task.wait(0.1)
 	end
 
+	-- 1) карточка игрока падает сверху: аватарка скина, ник и регион
+	Profile.drop()
+	task.wait(0.3)
+
+	-- 2) появляются панели; карточка остаётся перед ними (она выше по слоям)
 	pill.Position = UDim2.new(0.5, 0, 0, -70)
 	pill.Visible = true
 	tween(pill, 0.5, { Position = UDim2.new(0.5, 0, 0, 10) }, Enum.EasingStyle.Back)
 	dock.Position = UDim2.new(0.5, 0, 1, 90)
 	dock.Visible = true
 	tween(dock, 0.5, { Position = UDim2.new(0.5, 0, 1, -14) }, Enum.EasingStyle.Back)
+	Loading.uiReady = true
+
+	-- 3) карточка висит ещё немного, потом уезжает в угол
+	task.wait(Profile.HOLD)
+	Profile.settle()
 end)
