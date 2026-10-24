@@ -15,7 +15,9 @@
 -- ДВЕРИ И ЖИТЕЛИ — в панели «Декор» есть «Дверь» и «Стена» (поворот по 90°). Подойди к двери: она подсветится, над ней
 -- появится картинка; зажми E на 0.1 с — откроется. Пока на базе есть хоть одна дверь, там живут NPC (таблица Home):
 -- гуляют внутри, иногда выходят на улицу и возвращаются, машут тебе (шанс 40%), прыгают от радости у двери
--- и пугаются, если ты появился слишком резко (потом смотрят на тебя, смеются и уходят гулять или к двери).
+-- и пугаются, только если ты появился совсем резко (потом смотрят на тебя, смеются и уходят гулять или к двери).
+-- Среди жителей бывают малыши: ростом поменьше, голос повыше, прыгают от радости чаще (настройки SMALL_* в таблице Home).
+-- Здороваясь, житель машет рукой, говорит «Hi!» (облачко над головой) и проигрывает звук Home.SOUNDS.wave.
 --
 -- КАРТОЧКА ИГРОКА — после загрузки сверху падает карточка: аватарка твоего скина, ник и регион (флаг-смайлик).
 -- Потом выезжают панели (карточка остаётся поверх них), а через пару секунд карточка уменьшается и уезжает в угол (настройки в таблице Profile).
@@ -129,23 +131,26 @@ local Home = {
 	-- двери
 	IMAGE = "rbxassetid://11274293900", -- картинка над дверью, когда к ней подходишь
 	HOLD = 0.1,                         -- сколько секунд держать кнопку у двери
-	RANGE = 8,                          -- с какого расстояния дверь замечает тебя (студы)
+	RANGE = 11,                          -- с какого расстояния дверь замечает тебя (студы)
 	-- жители
 	MAX_NPC = 3,          -- сколько жителей (появляются, когда на базе есть хотя бы одна дверь)
+	SMALL_CHANCE = 0.4,   -- шанс, что житель окажется малышом (если жителей 3, хотя бы один малыш будет всегда)
+	SMALL_SCALE_MIN = 0.55, -- размер малыша: от ... (1 = обычный рост)
+	SMALL_SCALE_MAX = 0.75, -- ... до ...
 	WALK = 8,             -- скорость ходьбы
-	IN_ROOM = 6,          -- насколько далеко от двери гуляют внутри (студы)
-	OUT_ROOM = 9,         -- и снаружи
+	IN_ROOM = 9,          -- насколько далеко от двери гуляют внутри (студы)
+	OUT_ROOM = 12,         -- и снаружи
 	SEE = 32,             -- с какого расстояния замечают тебя (студы)
 	WAVE_CHANCE = 0.4,    -- шанс помахать, когда увидели тебя
-	WAVE_COOLDOWN = 12,   -- не чаще, чем раз в столько секунд
+	WAVE_COOLDOWN = 8,   -- не чаще, чем раз в столько секунд
 	OUT_CHANCE = 0.4,     -- шанс выйти погулять, когда пришло время
 	JOY_CHANCE = 0.6,     -- шанс подпрыгнуть от радости у двери, когда нагулялись
-	SCARE_CHANCE = 0.8,   -- шанс испугаться, если ты появился слишком резко
-	SCARE_DIST = 14,      -- ближе этого расстояния можно испугаться (студы)
-	SCARE_SPEED = 22,     -- так быстро (студов/с) нужно к жителю приблизиться, чтобы он испугался
-	SCARE_COOLDOWN = 20,  -- не чаще, чем раз в столько секунд
+	SCARE_CHANCE = 0.7,   -- шанс испугаться, если ты появился слишком резко
+	SCARE_DIST = 11,      -- ближе этого расстояния можно испугаться (студы)
+	SCARE_SPEED = 30,     -- так быстро (студов/с) нужно к жителю приблизиться, чтобы он испугался
+	SCARE_COOLDOWN = 40,  -- не чаще, чем раз в столько секунд
 	SOUNDS = {
-		wave = "rbxassetid://1307800712653",   -- машет рукой
+		wave = "rbxassetid://1307800712653",   -- здоровается: машет рукой и говорит «Hi!»
 		joy = "rbxassetid://130926713428015",  -- прыгает от радости
 		scare = "rbxassetid://75049633628598", -- испугался
 		laugh = "rbxassetid://102769336849011", -- смеётся
@@ -153,6 +158,7 @@ local Home = {
 	ANIMS = { -- стандартные анимации Roblox для R15
 		idle = 507766388, walk = 507777826, wave = 507770239, cheer = 507770677, laugh = 507770818,
 	},
+	GREET = "Hi! 👋",      -- облачко над головой, когда здоровается
 	doors = {}, npcs = {}, spawning = 0, acc = 0, lastSync = 0, failedAt = -100,
 }
 
@@ -1161,40 +1167,42 @@ do
 		make("PointLight", { Color = Color3.fromRGB(255, 214, 140), Range = 26, Brightness = 1.8 }, bulb)
 	end
 
-	-- 🏠 Дверь в стене: стена с проёмом, рама и створка. Створку помечаем "Leaf" — она открывается (см. Home).
-	-- Снаружи (там, где коврик) — «лицо» двери; створка открывается внутрь.
+	-- 🏠 Дверь в стене: стена 8 × 9 с проёмом 3.8 × 6.8 (пролезет любой персонаж), рама и створка.
+	-- Створку помечаем "Leaf" — она открывается (см. Home). Снаружи (там, где коврик) — «лицо» двери; створка открывается внутрь.
 	B.door = function(m)
 		local wall, frame = Color3.fromRGB(226, 214, 190), Color3.fromRGB(104, 70, 42)
 		local wood, dark, gold = Color3.fromRGB(150, 104, 60), Color3.fromRGB(112, 76, 44), Color3.fromRGB(240, 200, 80)
 		for _, sx in ipairs({ -1, 1 }) do
-			newPart(m, "WallSide", Vector3.new(0.6, 4.6, 0.5), CFrame.new(sx * 1.7, 2.3, 0), wall, PLASTIC, true)
-			newPart(m, "Jamb", Vector3.new(0.2, 3.5, 0.62), CFrame.new(sx * 1.3, 1.75, 0), frame, WOOD, true)
+			newPart(m, "WallSide", Vector3.new(1.85, 7.05, 0.6), CFrame.new(sx * 3.075, 3.525, 0), wall, PLASTIC, true)
+			newPart(m, "Jamb", Vector3.new(0.25, 7.05, 0.76), CFrame.new(sx * 2.025, 3.525, 0), frame, WOOD, true)
+			newPart(m, "Skirting", Vector3.new(1.88, 0.8, 0.7), CFrame.new(sx * 3.075, 0.4, 0), frame, WOOD, false)
 		end
-		newPart(m, "WallTop", Vector3.new(4, 1.1, 0.5), CFrame.new(0, 4.05, 0), wall, PLASTIC, true)
-		newPart(m, "Lintel", Vector3.new(2.8, 0.2, 0.62), CFrame.new(0, 3.4, 0), frame, WOOD, true)
-		newPart(m, "Sill", Vector3.new(2.6, 0.1, 0.7), CFrame.new(0, 0.05, 0), dark, WOOD, false)
+		newPart(m, "WallTop", Vector3.new(8, 1.95, 0.6), CFrame.new(0, 8.025, 0), wall, PLASTIC, true)
+		newPart(m, "Lintel", Vector3.new(4.3, 0.25, 0.76), CFrame.new(0, 6.925, 0), frame, WOOD, true)
+		newPart(m, "Cornice", Vector3.new(8.06, 0.5, 0.8), CFrame.new(0, 8.75, 0), frame, WOOD, false)
+		newPart(m, "Sill", Vector3.new(3.9, 0.1, 0.9), CFrame.new(0, 0.05, 0), dark, WOOD, false)
 		-- коврик снаружи
-		newPart(m, "Mat", Vector3.new(1.8, 0.06, 0.9), CFrame.new(0, 0.03, -0.85), Color3.fromRGB(150, 50, 56), FABRIC, false)
+		newPart(m, "Mat", Vector3.new(3.4, 0.08, 1.6), CFrame.new(0, 0.04, -1.4), Color3.fromRGB(150, 50, 56), FABRIC, false)
 
-		-- створка: петли слева (x = -1.2); всё, что помечено "Leaf", поворачивается вместе с ней
+		-- створка: петли слева (x = -1.9); всё, что помечено "Leaf", поворачивается вместе с ней
 		local function leaf(part)
 			part:SetAttribute("Leaf", true)
 			return part
 		end
-		leaf(newPart(m, "Leaf", Vector3.new(2.4, 3.2, 0.16), CFrame.new(0, 1.7, 0), wood, Enum.Material.WoodPlanks, true))
+		leaf(newPart(m, "Leaf", Vector3.new(3.8, 6.7, 0.25), CFrame.new(0, 3.45, 0), wood, Enum.Material.WoodPlanks, true))
 		for _, sz in ipairs({ -1, 1 }) do
-			leaf(newPart(m, "Panel", Vector3.new(1.7, 1.2, 0.06), CFrame.new(0, 2.4, sz * 0.09), dark, WOOD, false))
-			leaf(newPart(m, "Panel", Vector3.new(1.7, 1.2, 0.06), CFrame.new(0, 0.95, sz * 0.09), dark, WOOD, false))
-			leaf(ball(m, "Knob", Vector3.new(0.22, 0.22, 0.22), CFrame.new(0.85, 1.6, sz * 0.2), gold, METAL, false))
+			leaf(newPart(m, "Panel", Vector3.new(2.8, 2.4, 0.08), CFrame.new(0, 5.0, sz * 0.14), dark, WOOD, false))
+			leaf(newPart(m, "Panel", Vector3.new(2.8, 2.4, 0.08), CFrame.new(0, 1.9, sz * 0.14), dark, WOOD, false))
+			leaf(ball(m, "Knob", Vector3.new(0.34, 0.34, 0.34), CFrame.new(1.4, 3.3, sz * 0.3), gold, METAL, false))
 		end
 	end
 
-	-- 🏠 Стена: такой же кусок стены, как у двери, но без проёма (чтобы построить дом)
+	-- 🏠 Стена: такой же кусок стены 8 × 9, как у двери, но без проёма (чтобы построить дом)
 	B.wall = function(m)
-		local wall, trim = Color3.fromRGB(226, 214, 190), Color3.fromRGB(150, 118, 84)
-		newPart(m, "Wall", Vector3.new(4, 4.6, 0.5), CFrame.new(0, 2.3, 0), wall, PLASTIC, true)
-		newPart(m, "Skirting", Vector3.new(4.04, 0.45, 0.58), CFrame.new(0, 0.225, 0), trim, WOOD, false)
-		newPart(m, "Cornice", Vector3.new(4.04, 0.3, 0.64), CFrame.new(0, 4.55, 0), trim, WOOD, false)
+		local wall, trim = Color3.fromRGB(226, 214, 190), Color3.fromRGB(104, 70, 42)
+		newPart(m, "Wall", Vector3.new(8, 9, 0.6), CFrame.new(0, 4.5, 0), wall, PLASTIC, true)
+		newPart(m, "Skirting", Vector3.new(8.06, 0.8, 0.7), CFrame.new(0, 0.4, 0), trim, WOOD, false)
+		newPart(m, "Cornice", Vector3.new(8.06, 0.5, 0.8), CFrame.new(0, 8.75, 0), trim, WOOD, false)
 	end
 
 	-- собрать украшение по ключу
@@ -1324,10 +1332,10 @@ function Decor.turnStep()
 end
 
 -- ----- Двери -----
--- повернуть створку на angle градусов вокруг петель (петли — на левом краю проёма, x = -1.2)
+-- повернуть створку на angle градусов вокруг петель (петли — на левом краю проёма, x = -1.9)
 function Home.setAngle(d, angle)
 	local base = d.model.PrimaryPart.CFrame
-	local hinge = CFrame.new(-1.2, 0, 0)
+	local hinge = CFrame.new(-1.9, 0, 0)
 	local rot = hinge * CFrame.Angles(0, math.rad(angle), 0) * hinge:Inverse()
 	for _, l in ipairs(d.leaf) do
 		l.part.CFrame = base * rot * l.rel
@@ -1348,13 +1356,13 @@ function Home.attachDoor(m, cf)
 	local back = Vector3.new(-cf.LookVector.X, 0, -cf.LookVector.Z).Unit
 	d.pos0 = cf.Position
 	d.back = back
-	d.inGate = d.pos0 + back * 2.4
-	d.outGate = d.pos0 - back * 2.4
-	d.inCenter = d.pos0 + back * (Home.IN_ROOM * 0.5 + 2.5)
-	d.outCenter = d.pos0 - back * (Home.OUT_ROOM * 0.5 + 2.5)
+	d.inGate = d.pos0 + back * 4.4 -- дальше, чем размах створки (3.8), чтобы она не задевала жителя
+	d.outGate = d.pos0 - back * 3.4
+	d.inCenter = d.pos0 + back * (Home.IN_ROOM * 0.6 + 5)
+	d.outCenter = d.pos0 - back * (Home.OUT_ROOM * 0.6 + 5)
 
 	-- невидимая точка, к которой привязана кнопка
-	local trigger = newPart(m, "Trigger", Vector3.new(0.4, 0.4, 0.4), cf * CFrame.new(0, 1.6, 0), WHITE, Enum.Material.SmoothPlastic, false)
+	local trigger = newPart(m, "Trigger", Vector3.new(0.4, 0.4, 0.4), cf * CFrame.new(0, 3.4, 0), WHITE, Enum.Material.SmoothPlastic, false)
 	trigger.Transparency = 1
 	trigger.CanQuery = false
 	d.trigger = trigger
@@ -1372,7 +1380,7 @@ function Home.attachDoor(m, cf)
 		DepthMode = Enum.HighlightDepthMode.AlwaysOnTop, Enabled = false,
 	}, m)
 	d.gui = make("BillboardGui", {
-		Adornee = trigger, Size = UDim2.fromOffset(84, 84), StudsOffset = Vector3.new(0, 3.4, 0),
+		Adornee = trigger, Size = UDim2.fromOffset(84, 84), StudsOffset = Vector3.new(0, 6.6, 0),
 		AlwaysOnTop = true, LightInfluence = 0, MaxDistance = 80, Enabled = false,
 	}, m)
 	d.img = make("ImageLabel", {
@@ -1530,7 +1538,8 @@ function Home.pick(n, center, radius)
 	for _ = 1, 8 do
 		local a, r = math.random() * math.pi * 2, math.sqrt(math.random()) * radius
 		local g, inst = Home.groundAt(center + Vector3.new(math.cos(a) * r, 0, math.sin(a) * r))
-		if g and math.abs(g.Y - baseY) < 3 and not Home.blocked(inst) and Home.clear(n.root.Position, g) then
+		if g and math.abs(g.Y - baseY) < 3 and not Home.blocked(inst) and Home.clear(n.root.Position, g)
+			and Vector3.new(g.X - n.root.Position.X, 0, g.Z - n.root.Position.Z).Magnitude > 4 then
 			return g
 		end
 	end
@@ -1543,6 +1552,7 @@ function Home.getSound(n, key)
 	if not s then
 		s = make("Sound", {
 			SoundId = Home.SOUNDS[key], Volume = 1, RollOffMinDistance = 12, RollOffMaxDistance = 90,
+			PlaybackSpeed = n.pitch or 1,
 		}, n.root)
 		n.sounds[key] = s
 	end
@@ -1611,13 +1621,51 @@ function Home.pause(n, seconds)
 	return true
 end
 
+-- облачко над головой («Hi!»)
+function Home.bubble(n, text)
+	local head = n.model:FindFirstChild("Head")
+	if not head then
+		return
+	end
+	local gui = make("BillboardGui", {
+		Adornee = head, Size = UDim2.fromOffset(120, 48), StudsOffset = Vector3.new(0, 2.8 * n.scale + 0.2, 0),
+		AlwaysOnTop = true, LightInfluence = 0, MaxDistance = 90,
+	}, n.model)
+	local box = make("Frame", {
+		Size = UDim2.fromScale(1, 1), BackgroundColor3 = WHITE, BackgroundTransparency = 1, BorderSizePixel = 0,
+	}, gui)
+	make("UICorner", { CornerRadius = UDim.new(0, 16) }, box)
+	local lbl = make("TextLabel", {
+		Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Font = Enum.Font.GothamBold, TextSize = 26,
+		TextColor3 = Color3.fromRGB(30, 34, 50), TextTransparency = 1, Text = text,
+	}, box)
+	tween(box, 0.2, { BackgroundTransparency = 0.05 })
+	tween(lbl, 0.2, { TextTransparency = 0 })
+	task.delay(2.0, function()
+		tween(box, 0.3, { BackgroundTransparency = 1 })
+		tween(lbl, 0.3, { TextTransparency = 1 })
+		task.delay(0.35, function()
+			gui:Destroy()
+		end)
+	end)
+end
+
+-- постоять: если рядом ты — повернуться к тебе, а не пялиться в стену
+function Home.idle(n, seconds)
+	local pp = Home.playerPos()
+	if pp and n.seen and (pp - n.root.Position).Magnitude < 16 and math.random() < 0.6 then
+		Home.face(n, pp)
+	end
+	Home.pause(n, seconds)
+end
+
 -- идём к точке: "ok" — дошли, "event" — прервали, "stuck" — застряли, "dead" — жителя нет
 function Home.walkTo(n, target, stopDist, timeout)
 	local hum, root = n.hum, n.root
 	local t0 = os.clock()
 	local lastPos, lastMove = root.Position, t0
 	local nextMove = t0
-	hum.WalkSpeed = Home.WALK
+	hum.WalkSpeed = n.speed or Home.WALK
 	while true do
 		if not Home.alive(n) then
 			return "dead"
@@ -1655,7 +1703,7 @@ end
 function Home.joy(n)
 	Home.say(n, "joy")
 	Home.play(n, "cheer")
-	for _ = 1, 3 do
+	for _ = 1, n.small and 5 or 3 do
 		if not Home.alive(n) then
 			return
 		end
@@ -1678,7 +1726,8 @@ function Home.scared(n)
 		if away.Magnitude > 0.1 then
 			away = away.Unit
 			hum.Jump = true
-			root.AssemblyLinearVelocity = Vector3.new(away.X * 14, 20, away.Z * 14) -- отскочил назад
+			local k = 0.6 + 0.4 * n.scale
+			root.AssemblyLinearVelocity = Vector3.new(away.X * 14 * k, 20 * k, away.Z * 14 * k) -- отскочил назад
 		end
 	end
 	task.wait(0.9)
@@ -1713,6 +1762,7 @@ function Home.react(n)
 			Home.face(n, pp)
 		end
 		Home.say(n, "wave")
+		Home.bubble(n, Home.GREET)
 		Home.play(n, "wave")
 		task.wait(2.4)
 		Home.stop(n, "wave")
@@ -1771,7 +1821,7 @@ function Home.returnHome(n)
 	end
 	n.lock = true
 	Home.face(n, d.pos0)
-	if math.random() < Home.JOY_CHANCE then
+	if math.random() < (n.small and math.min(1, Home.JOY_CHANCE + 0.25) or Home.JOY_CHANCE) then
 		Home.joy(n)
 	end
 	if Home.alive(n) and Home.passDoor(n, d.outGate, d.inGate) then
@@ -1797,7 +1847,7 @@ function Home.insideStep(n)
 	if target then
 		Home.walkTo(n, target, 1.5, 12)
 	end
-	Home.pause(n, 0.8 + math.random() * 2.5) -- постоял, огляделся
+	Home.idle(n, 0.8 + math.random() * 2.5) -- постоял, огляделся
 end
 
 function Home.outsideStep(n)
@@ -1812,7 +1862,7 @@ function Home.outsideStep(n)
 	if target then
 		Home.walkTo(n, target, 1.5, 12)
 	end
-	Home.pause(n, 0.8 + math.random() * 2.5)
+	Home.idle(n, 0.8 + math.random() * 2.5)
 end
 
 -- дверь убрали: идём к ближайшей оставшейся, а если дверей нет — житель исчезает
@@ -1863,7 +1913,7 @@ function Home.perceive(n, now, dt)
 		n.model:PivotTo(CFrame.new(n.door.inGate + Vector3.new(0, 4, 0)))
 		return
 	end
-	local eye = n.root.Position + Vector3.new(0, 1.5, 0)
+	local eye = n.root.Position + Vector3.new(0, 1.5 * n.scale, 0)
 	local to = proot.Position - n.root.Position
 	local dist = to.Magnitude
 	local flat = Vector3.new(to.X, 0, to.Z)
@@ -1873,22 +1923,30 @@ function Home.perceive(n, now, dt)
 		local target = proot.Position + Vector3.new(0, 1, 0)
 		visible = workspace:Raycast(eye, target - eye, Home.rayParams) == nil -- стены загораживают
 	end
-	local closing = n.prevDist and (n.prevDist - dist) / math.max(dt, 0.05) or 0 -- как быстро ты приближаешься
-	n.prevDist = dist
+	-- как быстро именно ТЫ приближаешься к жителю (его собственная ходьба не считается)
+	local ppos = proot.Position
+	local pclosing = 0
+	if n.prevP then
+		local npcPos = n.root.Position
+		pclosing = ((npcPos - n.prevP).Magnitude - (npcPos - ppos).Magnitude) / math.max(dt, 0.05)
+	end
+	n.prevP = ppos
+	local unseenFor = now - n.lastSeen
 	local wasSeen = n.seen
 	if visible then
 		n.seen = true
 		n.lastSeen = now
-	elseif now - n.lastSeen > 1.5 then
+	elseif unseenFor > 1.5 then
 		n.seen = false
 	end
 	if n.lock or n.event then
 		return
 	end
-	-- слишком резко появился рядом (подбежал очень быстро или вынырнул из-за угла) → испуг
-	if visible and dist < Home.SCARE_DIST and now - n.lastScare > Home.SCARE_COOLDOWN then
-		local pspeed = Vector3.new(proot.AssemblyLinearVelocity.X, 0, proot.AssemblyLinearVelocity.Z).Magnitude
-		local sudden = closing > Home.SCARE_SPEED or (not wasSeen and dist < Home.SCARE_DIST * 0.7 and pspeed > 4)
+	-- испуг — только если ты очень резко оказался рядом: подлетел на огромной скорости (телепорт, быстрая вагонетка)
+	-- или вынырнул из-за угла после долгого отсутствия. Обычная ходьба и бег не пугают.
+	if visible and dist < Home.SCARE_DIST and now - n.lastScare > Home.SCARE_COOLDOWN and now - n.bornAt > 8 then
+		local sudden = pclosing > Home.SCARE_SPEED
+			or (unseenFor > 3 and dist < Home.SCARE_DIST * 0.6 and pclosing > Home.SCARE_SPEED * 0.55)
 		if sudden then
 			n.lastScare = now
 			if math.random() < Home.SCARE_CHANCE then
@@ -1897,7 +1955,7 @@ function Home.perceive(n, now, dt)
 			end
 		end
 	end
-	-- заметил тебя → с шансом 40% машет рукой
+	-- заметил тебя → с шансом 40% здоровается: машет рукой и говорит «Hi!»
 	if visible and not wasSeen and now - n.lastWave > Home.WAVE_COOLDOWN then
 		n.lastWave = now
 		if math.random() < Home.WAVE_CHANCE then
@@ -1982,7 +2040,7 @@ function Home.loadAnims(n)
 			end
 		end
 		if moving and A.walk then
-			A.walk:AdjustSpeed(speed / 14.5)
+			A.walk:AdjustSpeed(speed / (14.5 * n.scale)) -- у малыша шаг короче, ногами перебирает чаще
 		end
 	end)
 end
@@ -2018,10 +2076,23 @@ function Home.spawnNpc(index)
 			model:Destroy()
 			return
 		end
-		model.Name = "Resident"
+		-- иногда житель — малыш (уменьшаем всю модель вместе со скелетом)
+		local smallCount = 0
+		for _, o in ipairs(Home.npcs) do
+			if o.small then
+				smallCount += 1
+			end
+		end
+		local small = math.random() < Home.SMALL_CHANCE or (smallCount == 0 and #Home.npcs + 1 >= Home.MAX_NPC)
+		local scale = small and (Home.SMALL_SCALE_MIN + math.random() * (Home.SMALL_SCALE_MAX - Home.SMALL_SCALE_MIN))
+			or (0.95 + math.random() * 0.15)
+		pcall(function()
+			model:ScaleTo(scale)
+		end)
+		model.Name = small and "ResidentKid" or "Resident"
 		hum.WalkSpeed = Home.WALK
 		hum.UseJumpPower = false
-		hum.JumpHeight = 4
+		hum.JumpHeight = 4 * scale
 		hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
 		hum.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
 		local g = Home.groundAt(door.inCenter) or door.pos0
@@ -2032,6 +2103,8 @@ function Home.spawnNpc(index)
 			model = model, hum = hum, root = root, door = door, alive = true, place = "in",
 			sounds = {}, anim = {}, seen = false, lastSeen = -99, lastWave = -99, lastScare = -99,
 			nextOut = os.clock() + math.random(8, 20), backAt = 0,
+			speed = Home.WALK * (0.85 + math.random() * 0.4) * (small and 1.1 or 1), bornAt = os.clock(),
+			small = small, scale = scale, pitch = small and (1 + (1 - scale) * 0.7) or (0.92 + math.random() * 0.12), -- у малышей голос повыше
 		}
 		hum.Died:Connect(function()
 			n.alive = false
