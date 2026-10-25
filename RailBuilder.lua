@@ -17,6 +17,8 @@
 -- гуляют внутри, иногда выходят на улицу и возвращаются, машут тебе (шанс 40%), прыгают от радости у двери
 -- и пугаются, только если ты появился совсем резко (потом смотрят на тебя, смеются и уходят гулять или к двери).
 -- Жители — R6, кожа бежевая, футболки из Home.SHIRTS, штаны из Home.PANTS (к штанам Sleep — футболка Sleep).
+-- Волосы — из Home.HAIRS. Мимика: лицо меняется по ситуации (готовится испугаться → испугался → перепугался / машет / рад / смеётся),
+-- обычное лицо возвращается само; ID лиц лежат в Home.FACES.
 -- ЧУЖИЕ РЯДОМ: если близко чужой NPC (модель с Humanoid, не игрок и не житель) — жители пугаются, вскрикивают и убегают от него.
 -- Если близко объект с AnimationController — паника: все бегут вдвое быстрее к двери (снаружи заходят внутрь, внутри жмутся у двери).
 -- Среди жителей бывают малыши: ростом поменьше, голос повыше, прыгают от радости чаще (настройки SMALL_* в таблице Home).
@@ -174,6 +176,18 @@ local Home = {
 		{ id = 8592697362 },  -- Bacon
 		{ id = 1923579875, shirt = 6297766966 }, -- Sleep (к ним — футболка Sleep)
 		{ id = 14285822913 }, -- Kit bermuda black
+	},
+	HAIRS = { -- волосы жителей (ID из каталога): Pal Hair, True Blue Hair, Brown Charmer Hair
+		63690008, 451221329, 376548738,
+	},
+	hairNext = math.random(0, 2),
+	FACES = { -- лица для эмоций (ID лиц из каталога); обычное лицо не меняем. ID — строками!
+		prescare = "89760806612988",  -- готовится испугаться
+		scared = "124751387086397",   -- испугался
+		wave = "99812701718083",      -- машет тебе
+		joy = "125715171707930",      -- рад
+		terrified = "72403229016812", -- перепугался (убегает, паника)
+		laugh = "16775193696",        -- смеётся
 	},
 	shirtNext = math.random(0, 3),
 	GREET = "Hi! 👋",      -- облачко над головой, когда здоровается
@@ -1341,6 +1355,17 @@ Home.rayParams.FilterType = Enum.RaycastFilterType.Exclude
 Home.overlap = OverlapParams.new()
 Home.overlap.FilterType = Enum.RaycastFilterType.Exclude
 Home.overlap.MaxParts = 80
+do
+	local list = {}
+	for key, id in pairs(Home.FACES) do
+		list[#list + 1] = make("Decal", { Name = key, Texture = "rbxassetid://" .. id }, Home.folder)
+	end
+	task.spawn(function()
+		pcall(function()
+			ContentProvider:PreloadAsync(list) -- заранее подгружаем картинки лиц
+		end)
+	end)
+end
 Home.kindCache = setmetatable({}, { __mode = "k" }) -- что за модель рядом (человек / объект с аниматором / ничего), помним 4 секунды
 
 -- на сколько градусов поворачивает кнопка R у выбранного украшения (стены и двери — по 90°)
@@ -1585,6 +1610,23 @@ function Home.say(n, key)
 	Home.getSound(n, key):Play()
 end
 
+-- мимика: key = "prescare" / "scared" / "wave" / "joy" / "terrified" / "laugh"; nil — обычное лицо
+function Home.setFace(n, key)
+	if n.faceKey == key then
+		return
+	end
+	n.faceKey = key
+	local decal = n.faceDecal
+	if not decal or not decal.Parent then
+		return
+	end
+	if key and Home.FACES[key] then
+		decal.Texture = "rbxassetid://" .. Home.FACES[key]
+	else
+		decal.Texture = n.faceNormal or ""
+	end
+end
+
 function Home.play(n, name)
 	local t = n.anim[name]
 	if t then
@@ -1724,6 +1766,7 @@ end
 function Home.joy(n)
 	Home.say(n, "joy")
 	Home.play(n, "cheer")
+	Home.setFace(n, "joy")
 	for _ = 1, n.small and 5 or 3 do
 		if not Home.alive(n) then
 			return
@@ -1732,6 +1775,7 @@ function Home.joy(n)
 		task.wait(0.6)
 	end
 	Home.stop(n, "cheer")
+	Home.setFace(n, nil)
 end
 
 -- испугался → посмотрел на тебя → засмеялся → пошёл гулять или к двери
@@ -1739,6 +1783,9 @@ function Home.scared(n)
 	n.lock = true
 	local hum, root = n.hum, n.root
 	hum:MoveTo(root.Position)
+	Home.setFace(n, "prescare") -- готовится испугаться
+	task.wait(0.35)
+	Home.setFace(n, "scared")
 	Home.say(n, "scare")
 	Home.armsUp(n, true)
 	local pp = Home.playerPos()
@@ -1753,6 +1800,7 @@ function Home.scared(n)
 	end
 	task.wait(0.9)
 	Home.armsUp(n, false)
+	Home.setFace(n, nil)
 	pp = Home.playerPos()
 	if pp then
 		Home.face(n, pp) -- посмотрел на тебя
@@ -1761,8 +1809,10 @@ function Home.scared(n)
 	if Home.alive(n) then
 		Home.say(n, "laugh") -- посмеялся
 		Home.play(n, "laugh")
+		Home.setFace(n, "laugh")
 		task.wait(2.4)
 		Home.stop(n, "laugh")
+		Home.setFace(n, nil)
 	end
 	if math.random() < 0.5 then
 		n.wantDoor = true -- пошёл к двери (выйти или вернуться), иначе просто продолжит гулять
@@ -1860,11 +1910,15 @@ function Home.fear(n, from)
 	n.lastFear = os.clock()
 	local hum, root = n.hum, n.root
 	hum:MoveTo(root.Position)
+	Home.setFace(n, "prescare")
+	task.wait(0.3)
+	Home.setFace(n, "scared")
 	Home.say(n, "scare")
 	Home.armsUp(n, true)
 	hum.Jump = true
 	task.wait(0.5)
 	Home.armsUp(n, false)
+	Home.setFace(n, "terrified") -- убегает перепуганный
 	n.fast = true
 	local t0 = os.clock()
 	while Home.alive(n) and os.clock() - t0 < 7 do
@@ -1876,6 +1930,7 @@ function Home.fear(n, from)
 		Home.walkTo(n, target, 2, 3)
 	end
 	n.fast = n.panic == true
+	Home.setFace(n, n.panic and "terrified" or nil)
 	if n.place == "out" then
 		n.wantDoor = true -- если был на улице, потом возвращается к двери
 	end
@@ -1885,6 +1940,7 @@ end
 -- паника (рядом объект с AnimationController): бегом к двери — снаружи заходят внутрь, а те, кто уже внутри, жмутся у двери
 function Home.panicStep(n)
 	local d = n.door
+	Home.setFace(n, "terrified") -- перепугался
 	if n.place == "out" then
 		local r = Home.walkTo(n, d.outGate, 1.5, 14)
 		if r == "ok" then
@@ -1920,8 +1976,10 @@ function Home.react(n)
 		Home.say(n, "wave")
 		Home.bubble(n, Home.GREET)
 		Home.play(n, "wave")
+		Home.setFace(n, "wave")
 		task.wait(2.4)
 		Home.stop(n, "wave")
+		Home.setFace(n, nil)
 		n.lock = false
 	end
 end
@@ -2046,6 +2104,9 @@ end
 function Home.run(n)
 	while Home.alive(n) do
 		n.fast = n.panic == true -- в панике бегут вдвое быстрее
+		if not n.panic and n.faceKey == "terrified" and not n.lock then
+			Home.setFace(n, nil) -- паника кончилась — лицо снова обычное
+		end
 		if n.event then
 			Home.react(n)
 		elseif not n.door.model.Parent then
@@ -2148,6 +2209,8 @@ function Home.newModel(i)
 	local pants = Home.PANTS[rng:NextInteger(1, #Home.PANTS)]
 	Home.shirtNext = Home.shirtNext % #Home.SHIRTS + 1 -- футболки по очереди, чтобы у соседей были разные
 	local shirtId = pants.shirt or Home.SHIRTS[Home.shirtNext] -- к некоторым штанам футболка полагается своя
+	Home.hairNext = Home.hairNext % #Home.HAIRS + 1 -- волосы тоже по очереди
+	local hairId = Home.HAIRS[Home.hairNext]
 
 	local function build(asTShirt)
 		local desc = Instance.new("HumanoidDescription")
@@ -2158,6 +2221,7 @@ function Home.newModel(i)
 		desc.LeftLegColor = legColor
 		desc.RightLegColor = legColor
 		desc.Pants = pants.id
+		desc.HairAccessory = tostring(hairId)
 		if asTShirt then
 			desc.GraphicTShirt = shirtId
 		else
@@ -2296,6 +2360,13 @@ function Home.spawnNpc(index)
 			speed = Home.WALK * (0.85 + math.random() * 0.4) * (small and 1.1 or 1), bornAt = os.clock(),
 			small = small, scale = scale, pitch = small and (1 + (1 - scale) * 0.7) or (0.92 + math.random() * 0.12), -- у малышей голос повыше
 		}
+		local head = model:FindFirstChild("Head")
+		local decal = head and (head:FindFirstChild("face") or head:FindFirstChildOfClass("Decal"))
+		if head and not decal then
+			decal = make("Decal", { Name = "face", Face = Enum.NormalId.Front, Texture = "" }, head)
+		end
+		n.faceDecal = decal
+		n.faceNormal = decal and decal.Texture or "" -- обычное лицо
 		hum.Died:Connect(function()
 			n.alive = false
 		end)
