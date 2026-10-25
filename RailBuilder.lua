@@ -17,7 +17,8 @@
 -- гуляют внутри, иногда выходят на улицу и возвращаются, машут тебе (шанс 40%), прыгают от радости у двери
 -- и пугаются, только если ты появился совсем резко (потом смотрят на тебя, смеются и уходят гулять или к двери).
 -- Жители — R6, кожа бежевая, футболки из Home.SHIRTS, штаны из Home.PANTS (к штанам Sleep — футболка Sleep).
--- ОБУЧЕНИЕ: если ты уходишь далеко от дома (Home.LEARN_FAR) и там остаёшься, жители выходят и идут точно по твоему маршруту,
+-- ОБУЧЕНИЕ: если ты уходишь далеко от дома (Home.LEARN_FAR), но не слишком (Home.LEARN_MAX), и там остаёшься, жители выходят
+-- и идут точно по линии твоего маршрута (подсвечены Highlight),
 -- на месте удивляются (лицо amazed), потом бегом возвращаются домой по тому же пути; иногда ходят туда сами (Home.VISIT_*).
 -- Волосы — из Home.HAIRS. Мимика: лицо меняется по ситуации (готовится испугаться → испугался → перепугался / машет / рад / смеётся),
 -- обычное лицо возвращается само; ID лиц лежат в Home.FACES.
@@ -157,7 +158,9 @@ local Home = {
 	SCARE_SPEED = 30,     -- так быстро (студов/с) нужно к жителю приблизиться, чтобы он испугался
 	SCARE_COOLDOWN = 40,  -- не чаще, чем раз в столько секунд
 	LEARN_HOME = 22,      -- ближе этого расстояния от двери ты «дома»
-	LEARN_FAR = 60,       -- дальше этого расстояния от двери жители захотят повторить твой маршрут
+	LEARN_FAR = 45,       -- дальше этого расстояния от двери жители захотят повторить твой маршрут...
+	LEARN_MAX = 120,      -- ...но только если ты не ушёл слишком далеко: дальше этого расстояния маршрут не запоминается
+	START_NEAR = 10,      -- маршрут начинается там, где ты в последний раз был ближе этого расстояния к двери
 	LEARN_STAY = 4,       -- столько секунд нужно простоять вдали, чтобы это место стало «местом обучения»
 	LEARN_MAX_TIME = 30,  -- или столько секунд пробыть вдали от дома
 	LEARN_CHANCE = 1,     -- шанс, что житель пойдёт учиться (1 = каждый)
@@ -165,7 +168,7 @@ local Home = {
 	VISIT_MIN = 60,       -- как часто житель сам ходит на выученное место: от ... секунд
 	VISIT_MAX = 120,      -- ... до ... секунд
 	VISIT_CHANCE = 0.6,   -- и с каким шансом
-	STEP = 3,             -- через сколько студов записывается точка твоего маршрута
+	STEP = 2.5,           -- через сколько студов записывается точка твоего маршрута
 	MAX_TRAIL = 600,      -- самый длинный маршрут (точек)
 	MAX_LESSONS = 3,      -- сколько выученных мест помнят
 	FEAR_RADIUS = 18,     -- чужой NPC (модель с Humanoid, не игрок) ближе этого расстояния пугает жителей — они убегают
@@ -207,6 +210,7 @@ local Home = {
 	shirtNext = math.random(0, 3),
 	GREET = "Hi! 👋",      -- облачко над головой, когда здоровается
 	lessons = {},         -- выученные маршруты
+	recent = {},          -- последние шаги у дома (откуда начинается маршрут)
 	doors = {}, npcs = {}, spawning = 0, acc = 0, lastSync = 0, failedAt = -100,
 }
 
@@ -1479,6 +1483,7 @@ function Home.clearDoors()
 		Home.detachDoor(m)
 	end
 	Home.lessons = {}
+	Home.recent = {}
 	Home.trip, Home.anchor, Home.lastSample = nil, nil, nil
 end
 
@@ -1694,7 +1699,7 @@ end
 function Home.pause(n, seconds)
 	local t0 = os.clock()
 	while os.clock() - t0 < seconds do
-		if not Home.alive(n) or n.event then
+		if not Home.alive(n) or n.event or (n.pending and not n.lock and not n.panic and os.clock() >= n.pendingAt) then
 			return false
 		end
 		task.wait(0.1)
@@ -1751,9 +1756,9 @@ function Home.walkRaw(n, target, stopDist, timeout)
 			return "dead"
 		end
 		hum.WalkSpeed = (n.speed or Home.WALK) * (n.fast and Home.FAST or 1) -- в панике и при испуге бегут быстрее
-		if n.event then
+		if n.event or (n.pending and not n.lock and not n.panic and os.clock() >= n.pendingAt) then
 			hum:MoveTo(root.Position)
-			return "event"
+			return "event" -- событие или пора идти учиться
 		end
 		local now = os.clock()
 		local p = root.Position
@@ -1908,15 +1913,19 @@ function Home.record(now)
 	local _, near = Home.nearestDoor(root.Position)
 	if near == math.huge then
 		Home.trip, Home.anchor, Home.lastSample = nil, nil, nil -- дверей нет — учить некого
+		Home.recent = {}
 		return
 	end
-	local feet = root.Position - Vector3.new(0, hum.HipHeight + root.Size.Y / 2, 0) -- точка под ногами
+	-- точка земли под тобой (лучом вниз — это точнее, чем считать по росту персонажа)
+	Home.rayParams.FilterDescendantsInstances = Home.filter()
+	local hit = workspace:Raycast(root.Position, Vector3.new(0, -12, 0), Home.rayParams)
+	local feet = hit and hit.Position or (root.Position - Vector3.new(0, 3, 0))
 	local teleported = Home.lastSample ~= nil and (root.Position - Home.lastSample).Magnitude > 25
 	Home.lastSample = root.Position
 	local riding = (cart ~= nil and cart.riding) or hum.Sit
 	local t = Home.trip
 
-	-- дома: запоминаем, откуда ты ушёл, и завершаем поход, если ты вернулся
+	-- дома: запоминаем, откуда ты ушёл (и последние шаги у двери), и завершаем поход, если ты вернулся
 	if near < Home.LEARN_HOME then
 		if t and t.far and not t.done and not teleported and not riding then
 			Home.finishTrip("returned")
@@ -1924,6 +1933,13 @@ function Home.record(now)
 		Home.trip = nil
 		Home.anchor = feet
 		Home.lastPt = feet
+		local rec = Home.recent
+		if #rec == 0 or (feet - rec[#rec]).Magnitude >= Home.STEP then
+			rec[#rec + 1] = feet
+			if #rec > 40 then
+				table.remove(rec, 1)
+			end
+		end
 		return
 	end
 
@@ -1941,12 +1957,37 @@ function Home.record(now)
 			Home.trip = { done = true, pts = {} } -- неизвестно, откуда ты пришёл
 			return
 		end
-		t = { pts = { Home.anchor }, far = false, maxD = 0, farIdx = 1, still = feet, stillAt = now }
+		-- маршрут начинается там, где ты последний раз был у двери (чтобы жители шли ровно от дома)
+		local pts, rec, startAt = {}, Home.recent, nil
+		for k = #rec, 1, -1 do
+			local _, dd = Home.nearestDoor(rec[k])
+			if dd < Home.START_NEAR then
+				startAt = k
+				break
+			end
+		end
+		if startAt then
+			for k = startAt, #rec do
+				pts[#pts + 1] = rec[k]
+			end
+		end
+		if #pts == 0 or (pts[#pts] - Home.anchor).Magnitude > 1 then
+			pts[#pts + 1] = Home.anchor
+		end
+		t = { pts = pts, far = false, maxD = 0, farIdx = #pts, still = feet, stillAt = now }
 		Home.trip = t
-		Home.lastPt = Home.anchor
+		Home.lastPt = pts[#pts]
 	end
-	if t.done or hum.FloorMaterial == Enum.Material.Air then
-		return -- в прыжке и после готового урока не записываем
+	if t.done then
+		return
+	end
+	-- слишком далеко от дома — такой маршрут не запоминаем (только «далеко, но не сильно»)
+	if near > Home.LEARN_MAX then
+		t.done = true
+		return
+	end
+	if not hit or hum.FloorMaterial == Enum.Material.Air then
+		return -- в прыжке не записываем
 	end
 	if (feet - Home.lastPt).Magnitude >= Home.STEP then
 		t.pts[#t.pts + 1] = feet
@@ -1967,7 +2008,7 @@ function Home.record(now)
 	if (feet - t.still).Magnitude > 5 then
 		t.still, t.stillAt = feet, now
 	end
-	-- далеко и стоишь на месте (или давно там) → это «место обучения»
+	-- далеко (но не слишком) и стоишь на месте или давно там → это «место обучения»
 	if t.far and (now - t.stillAt > Home.LEARN_STAY or now - t.farAt > Home.LEARN_MAX_TIME) then
 		if (feet - Home.lastPt).Magnitude > 1 then
 			t.pts[#t.pts + 1] = feet
@@ -1992,54 +2033,129 @@ function Home.dispatch(lesson)
 	end
 end
 
--- идти ТОЧНО по маршруту (точка за точкой); reverse — с конца в начало. true — дошёл до конца.
--- Если застрял, прыгает, а потом «подтягивается» прямо на маршрут — чтобы не ошибиться ни на шаг.
-function Home.followRoute(n, pts, reverse)
-	local hum, root = n.hum, n.root
-	local last, step, i = #pts, 1, 1
-	if reverse then
-		last, step, i = 1, -1, #pts
+-- на сколько корень (HumanoidRootPart) жителя выше земли, когда он стоит (считаем по ногам)
+function Home.liftOf(n)
+	local leg = n.model:FindFirstChild("Left Leg")
+	if leg and leg:IsA("BasePart") then
+		return math.max(1, n.root.Position.Y - (leg.Position.Y - leg.Size.Y / 2))
 	end
-	local lastPos, stuckSince = root.Position, os.clock()
+	return 3 * (n.scale or 1)
+end
+
+-- идти ТОЧНО по маршруту; reverse — с конца в начало. true — дошёл до конца.
+-- Житель не «ищет дорогу», а скользит вдоль самой линии маршрута: корень закреплён и двигается по твоим точкам,
+-- а ноги сами идут (анимация ходьбы). Поэтому он не застревает, не сворачивает и идёт ровно там, где шёл ты.
+function Home.followRoute(n, pts, reverse)
+	local root = n.root
+	local route = {}
+	if reverse then
+		for i = #pts, 1, -1 do
+			route[#route + 1] = pts[i]
+		end
+	else
+		for i = 1, #pts do
+			route[i] = pts[i]
+		end
+	end
+	local cum, total = { 0 }, 0
+	for i = 2, #route do
+		total += (route[i] - route[i - 1]).Magnitude
+		cum[i] = total
+	end
+	if total < 1 then
+		return true
+	end
+	n.lift = n.lift or Home.liftOf(n)
+	local A = n.anim
+	n.hum:MoveTo(root.Position)
+	root.Anchored = true
+	n.routeMove = true -- пока идёт по маршруту, походкой управляю я (а не событие Running)
+	if A.idle then
+		A.idle:Stop(0.15)
+	end
+	if A.walk then
+		A.walk:Play(0.15)
+	end
+	local function finish(ok)
+		root.Anchored = false
+		root.AssemblyLinearVelocity = Vector3.zero
+		n.routeMove = false
+		n.walking = false
+		if A.walk then
+			A.walk:Stop(0.2)
+		end
+		if A.idle then
+			A.idle:Play(0.2)
+		end
+		return ok
+	end
+
+	local s, i, heading = 0, 1, nil
 	while true do
 		if not Home.alive(n) or n.panic or not n.door.model.Parent then
-			return false -- паника, дверь убрали или жителя нет — обучение прерывается
+			return finish(false) -- паника, дверь убрали или жителя нет — обучение прерывается
 		end
-		hum.WalkSpeed = (n.speed or Home.WALK) * (n.fast and Home.FAST or 1)
-		local p = root.Position
-		while i ~= last and Vector3.new(p.X - pts[i].X, 0, p.Z - pts[i].Z).Magnitude < 2.5 do
-			i += step -- до этой точки уже дошли
-			stuckSince, lastPos = os.clock(), p
+		local dt = math.min(RunService.Heartbeat:Wait(), 0.1)
+		local speed = (n.speed or Home.WALK) * (n.fast and Home.FAST or 1)
+		s = math.min(total, s + speed * dt)
+		while i < #route - 1 and cum[i + 1] < s do
+			i += 1
 		end
-		local target = pts[i]
-		if i == last and Vector3.new(p.X - target.X, 0, p.Z - target.Z).Magnitude < 2.5 then
-			return true
+		local a, b = route[i], route[i + 1]
+		local seg = cum[i + 1] - cum[i]
+		local pos = a:Lerp(b, seg > 0 and (s - cum[i]) / seg or 1)
+		local dir = Vector3.new(b.X - a.X, 0, b.Z - a.Z)
+		if dir.Magnitude > 0.01 then
+			-- поворачивается плавно, чтобы на изгибах не дёргался
+			heading = heading and heading:Lerp(dir.Unit, math.min(1, dt * 10)) or dir.Unit
 		end
-		if (p - lastPos).Magnitude > 0.5 then
-			lastPos, stuckSince = p, os.clock()
+		local p3 = Vector3.new(pos.X, pos.Y + n.lift, pos.Z)
+		if heading and heading.Magnitude > 0.01 then
+			root.CFrame = CFrame.lookAt(p3, p3 + heading)
 		else
-			local stuck = os.clock() - stuckSince
-			if stuck > 1 then
-				hum.Jump = true
-			end
-			if stuck > 2.5 then
-				root.CFrame = CFrame.new(target + Vector3.new(0, 3, 0))
-				lastPos, stuckSince = target, os.clock()
-			end
+			root.CFrame = CFrame.new(p3)
 		end
-		hum:MoveTo(target)
-		task.wait(0.1)
+		if A.walk then
+			A.walk:AdjustSpeed(speed / (14.5 * n.scale))
+		end
+		if s >= total then
+			return finish(true)
+		end
 	end
 end
 
--- «учёба»: выйти из дома → пройти по маршруту → на месте удивиться → бегом обратно домой
+-- «учёба»: выйти из дома → пройти по маршруту → на месте удивиться → бегом обратно домой.
+-- Пока житель учится, он подсвечен (Highlight), чтобы его было видно.
 function Home.study(n, lesson)
-	local pts, d = lesson.pts, n.door
+	local d = n.door
 	n.lock = true
+	n.studyHL = make("Highlight", {
+		FillColor = C.accent, FillTransparency = 0.6, OutlineColor = WHITE, OutlineTransparency = 0,
+		DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
+	}, n.model)
 	local function finish()
 		n.lock = false
 		n.fast = n.panic == true
 		Home.setFace(n, nil)
+		if n.studyHL then
+			n.studyHL:Destroy()
+			n.studyHL = nil
+		end
+	end
+	-- маршрут начинаем с первой точки, которая уже снаружи дома (по ту сторону двери, где коврик)
+	local first = 1
+	for i, p in ipairs(lesson.pts) do
+		if (p - d.pos0):Dot(d.back) < -1 then
+			first = i
+			break
+		end
+	end
+	local pts = {}
+	for i = first, #lesson.pts do
+		pts[#pts + 1] = lesson.pts[i]
+	end
+	if #pts < 4 then
+		return finish()
 	end
 	-- 1) выйти из дома
 	if n.place == "in" then
@@ -2052,10 +2168,10 @@ function Home.study(n, lesson)
 	if not Home.alive(n) or n.panic or not d.model.Parent then
 		return finish()
 	end
-	-- 2) к началу маршрута (если не дошёл за разумное время — переносим к началу, чтобы дальше всё шло без ошибок)
+	-- 2) к началу маршрута (если не дошёл за разумное время — переносим к началу, чтобы дальше всё шло ровно)
 	local r = Home.walkTo(n, pts[1], 2.5, 25)
 	if r ~= "ok" and Home.alive(n) and not n.panic then
-		n.root.CFrame = CFrame.new(pts[1] + Vector3.new(0, 3, 0))
+		n.root.CFrame = CFrame.new(pts[1] + Vector3.new(0, n.lift or 3, 0))
 	end
 	-- 3) точно по твоему маршруту
 	if not Home.followRoute(n, pts, false) then
@@ -2425,6 +2541,12 @@ function Home.run(n)
 			-- что-то пошло не так: пишем в консоль, сбрасываем состояние и продолжаем жить
 			warn("Жители: ошибка в поведении:", err)
 			n.lock, n.event, n.fast = false, nil, false
+			if n.studyHL then
+				n.studyHL:Destroy()
+				n.studyHL = nil
+			end
+			n.root.Anchored = false
+			n.routeMove = false
 			pcall(Home.armsUp, n, false)
 			pcall(Home.setFace, n, nil)
 			task.wait(1)
@@ -2591,6 +2713,9 @@ function Home.loadAnims(n)
 	-- ходит — играет походка, стоит — стойка
 	n.walking = false
 	n.hum.Running:Connect(function(speed)
+		if n.routeMove then
+			return -- по маршруту ходьбой управляет followRoute
+		end
 		local moving = speed > 0.5
 		if moving ~= n.walking then
 			n.walking = moving
@@ -2681,6 +2806,7 @@ function Home.spawnNpc(index)
 		hum.Died:Connect(function()
 			n.alive = false
 		end)
+		n.lift = Home.liftOf(n) -- высота корня над землёй (нужна, чтобы ходить по маршруту)
 		Home.loadAnims(n)
 		Home.npcs[#Home.npcs + 1] = n
 		-- заранее загружаем звуки, чтобы первый раз они не запаздывали
