@@ -1723,7 +1723,7 @@ function Home.idle(n, seconds)
 end
 
 -- идём к точке: "ok" — дошли, "event" — прервали, "stuck" — застряли, "dead" — жителя нет
-function Home.walkTo(n, target, stopDist, timeout)
+function Home.walkRaw(n, target, stopDist, timeout)
 	local hum, root = n.hum, n.root
 	local t0 = os.clock()
 	local lastPos, lastMove = root.Position, t0
@@ -1759,6 +1759,18 @@ function Home.walkTo(n, target, stopDist, timeout)
 		end
 		task.wait(0.1)
 	end
+end
+
+-- Обёртка над walkRaw. Если «дошли» мгновенно (уже стоим у цели), walkRaw возвращается без единой паузы —
+-- и цикл, который вызывает walkTo снова и снова, мог крутиться без остановки и вешать всю игру.
+-- Теперь каждый вызов гарантированно отдаёт управление хотя бы на 0.1 секунды.
+function Home.walkTo(n, target, stopDist, timeout)
+	local t0 = os.clock()
+	local r = Home.walkRaw(n, target, stopDist, timeout)
+	if os.clock() - t0 < 0.05 then
+		task.wait(0.1)
+	end
+	return r
 end
 
 -- ----- Жители: поведение -----
@@ -1921,14 +1933,22 @@ function Home.fear(n, from)
 	Home.setFace(n, "terrified") -- убегает перепуганный
 	n.fast = true
 	local t0 = os.clock()
-	while Home.alive(n) and os.clock() - t0 < 7 do
+	local laps = 0
+	while Home.alive(n) and os.clock() - t0 < 7 and laps < 40 do
+		laps += 1
 		local threat = n.threat or from
 		if (root.Position - threat).Magnitude > Home.FEAR_RADIUS + 8 then
 			break -- убежал достаточно далеко
 		end
-		local target = Home.fleePoint(n, threat) or ((n.place == "in") and n.door.inGate or n.door.outGate)
+		local target = Home.fleePoint(n, threat)
+		if not target then
+			-- бежать некуда (стены): жмётся к двери и пережидает
+			target = (n.place == "in") and n.door.inGate or n.door.outGate
+		end
 		Home.walkTo(n, target, 2, 3)
+		task.wait(0.15) -- каждый круг цикла обязательно отдаёт управление — раньше здесь игра зависала
 	end
+	n.lastFear = os.clock() -- пауза до следующего испуга считается с конца бегства
 	n.fast = n.panic == true
 	Home.setFace(n, n.panic and "terrified" or nil)
 	if n.place == "out" then
@@ -2101,24 +2121,37 @@ function Home.rehome(n)
 	n.backAt = os.clock() + math.random(8, 16)
 end
 
+-- один «шаг» жизни жителя
+function Home.tick(n)
+	n.fast = n.panic == true -- в панике бегут вдвое быстрее
+	if not n.panic and n.faceKey == "terrified" and not n.lock then
+		Home.setFace(n, nil) -- паника кончилась — лицо снова обычное
+	end
+	if n.event then
+		Home.react(n)
+	elseif not n.door.model.Parent then
+		Home.rehome(n)
+	elseif n.panic then
+		Home.panicStep(n)
+	elseif n.place == "in" then
+		Home.insideStep(n)
+	else
+		Home.outsideStep(n)
+	end
+	task.wait()
+end
+
 function Home.run(n)
 	while Home.alive(n) do
-		n.fast = n.panic == true -- в панике бегут вдвое быстрее
-		if not n.panic and n.faceKey == "terrified" and not n.lock then
-			Home.setFace(n, nil) -- паника кончилась — лицо снова обычное
+		local ok, err = pcall(Home.tick, n)
+		if not ok then
+			-- что-то пошло не так: пишем в консоль, сбрасываем состояние и продолжаем жить
+			warn("Жители: ошибка в поведении:", err)
+			n.lock, n.event, n.fast = false, nil, false
+			pcall(Home.armsUp, n, false)
+			pcall(Home.setFace, n, nil)
+			task.wait(1)
 		end
-		if n.event then
-			Home.react(n)
-		elseif not n.door.model.Parent then
-			Home.rehome(n)
-		elseif n.panic then
-			Home.panicStep(n)
-		elseif n.place == "in" then
-			Home.insideStep(n)
-		else
-			Home.outsideStep(n)
-		end
-		task.wait()
 	end
 end
 
@@ -2161,7 +2194,7 @@ function Home.perceive(n, now, dt)
 	end
 	-- чужие рядом? проверяем раз в полсекунды
 	if now >= n.nextScan then
-		n.nextScan = now + 0.5
+		n.nextScan = now + 0.7 + math.random() * 0.3
 		local npcPos, objPos = Home.scan(n, now)
 		n.threat = npcPos -- позиция чужого NPC (или nil)
 		if objPos then
@@ -2355,7 +2388,7 @@ function Home.spawnNpc(index)
 		local n = {
 			model = model, hum = hum, root = root, door = door, alive = true, place = "in",
 			sounds = {}, anim = {}, seen = false, lastSeen = -99, lastWave = -99, lastScare = -99,
-			nextScan = 0, panicUntil = 0, lastFear = -99, panic = false, fast = false,
+			nextScan = os.clock() + math.random() * 0.8, panicUntil = 0, lastFear = -99, panic = false, fast = false,
 			nextOut = os.clock() + math.random(8, 20), backAt = 0,
 			speed = Home.WALK * (0.85 + math.random() * 0.4) * (small and 1.1 or 1), bornAt = os.clock(),
 			small = small, scale = scale, pitch = small and (1 + (1 - scale) * 0.7) or (0.92 + math.random() * 0.12), -- у малышей голос повыше
