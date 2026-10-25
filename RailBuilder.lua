@@ -17,6 +17,8 @@
 -- гуляют внутри, иногда выходят на улицу и возвращаются, машут тебе (шанс 40%), прыгают от радости у двери
 -- и пугаются, только если ты появился совсем резко (потом смотрят на тебя, смеются и уходят гулять или к двери).
 -- Жители — R6, кожа бежевая, футболки из Home.SHIRTS, штаны из Home.PANTS (к штанам Sleep — футболка Sleep).
+-- ОБУЧЕНИЕ: если ты уходишь далеко от дома (Home.LEARN_FAR) и там остаёшься, жители выходят и идут точно по твоему маршруту,
+-- на месте удивляются (лицо amazed), потом бегом возвращаются домой по тому же пути; иногда ходят туда сами (Home.VISIT_*).
 -- Волосы — из Home.HAIRS. Мимика: лицо меняется по ситуации (готовится испугаться → испугался → перепугался / машет / рад / смеётся),
 -- обычное лицо возвращается само; ID лиц лежат в Home.FACES.
 -- ЧУЖИЕ РЯДОМ: если близко чужой NPC (модель с Humanoid, не игрок и не житель) — жители пугаются, вскрикивают и убегают от него.
@@ -154,6 +156,18 @@ local Home = {
 	SCARE_DIST = 11,      -- ближе этого расстояния можно испугаться (студы)
 	SCARE_SPEED = 30,     -- так быстро (студов/с) нужно к жителю приблизиться, чтобы он испугался
 	SCARE_COOLDOWN = 40,  -- не чаще, чем раз в столько секунд
+	LEARN_HOME = 22,      -- ближе этого расстояния от двери ты «дома»
+	LEARN_FAR = 60,       -- дальше этого расстояния от двери жители захотят повторить твой маршрут
+	LEARN_STAY = 4,       -- столько секунд нужно простоять вдали, чтобы это место стало «местом обучения»
+	LEARN_MAX_TIME = 30,  -- или столько секунд пробыть вдали от дома
+	LEARN_CHANCE = 1,     -- шанс, что житель пойдёт учиться (1 = каждый)
+	STARE = 5,            -- сколько секунд удивляются на месте
+	VISIT_MIN = 60,       -- как часто житель сам ходит на выученное место: от ... секунд
+	VISIT_MAX = 120,      -- ... до ... секунд
+	VISIT_CHANCE = 0.6,   -- и с каким шансом
+	STEP = 3,             -- через сколько студов записывается точка твоего маршрута
+	MAX_TRAIL = 600,      -- самый длинный маршрут (точек)
+	MAX_LESSONS = 3,      -- сколько выученных мест помнят
 	FEAR_RADIUS = 18,     -- чужой NPC (модель с Humanoid, не игрок) ближе этого расстояния пугает жителей — они убегают
 	FEAR_COOLDOWN = 15,   -- не чаще, чем раз в столько секунд
 	ALARM_RADIUS = 22,    -- объект с AnimationController ближе этого — паника: бегут вдвое быстрее к двери
@@ -188,9 +202,11 @@ local Home = {
 		joy = "125715171707930",      -- рад
 		terrified = "72403229016812", -- перепугался (убегает, паника)
 		laugh = "16775193696",        -- смеётся
+		amazed = "8595439578",        -- удивился (на месте, где «научился»)
 	},
 	shirtNext = math.random(0, 3),
 	GREET = "Hi! 👋",      -- облачко над головой, когда здоровается
+	lessons = {},         -- выученные маршруты
 	doors = {}, npcs = {}, spawning = 0, acc = 0, lastSync = 0, failedAt = -100,
 }
 
@@ -1462,6 +1478,8 @@ function Home.clearDoors()
 	for m in pairs(Home.doors) do
 		Home.detachDoor(m)
 	end
+	Home.lessons = {}
+	Home.trip, Home.anchor, Home.lastSample = nil, nil, nil
 end
 
 -- открыть / закрыть; autoClose — через сколько секунд закрыть самой (для жителей)
@@ -1832,6 +1850,249 @@ function Home.scared(n)
 	n.lock = false
 end
 
+-- ----- Обучение: жители повторяют твой маршрут -----
+-- Пока ты ходишь, скрипт записывает твой путь. Когда ты уходишь далеко от дома и там остаёшься (или возвращаешься),
+-- из записи получается «урок»: жители выходят из дома, идут ТОЧНО по твоему маршруту (по тем же точкам),
+-- на месте смотрят и удивляются, потом бегом возвращаются домой по тому же пути. Иногда ходят туда сами.
+
+-- ближайшая дверь к точке (и расстояние до неё)
+function Home.nearestDoor(pos)
+	local best, bestD = nil, math.huge
+	for m, d in pairs(Home.doors) do
+		if m.Parent then
+			local dist = (d.pos0 - pos).Magnitude
+			if dist < bestD then
+				best, bestD = d, dist
+			end
+		end
+	end
+	return best, bestD
+end
+
+-- поход закончен: превращаем записанный путь в урок и отправляем жителей учиться
+function Home.finishTrip(why, look)
+	local t = Home.trip
+	if not t or t.done then
+		return
+	end
+	t.done = true
+	-- вернулся домой — «место обучения» это самая дальняя точка; остался на месте — последняя
+	local last = (why == "returned") and t.farIdx or #t.pts
+	if last < 8 then
+		return -- слишком короткий маршрут
+	end
+	if not look then
+		local a, b = t.pts[last - 1], t.pts[last]
+		look = Vector3.new(b.X - a.X, 0, b.Z - a.Z)
+	end
+	local pts = {}
+	for i = 1, last do
+		pts[i] = t.pts[i]
+	end
+	local lesson = { pts = pts, look = (look.Magnitude > 0.1) and look.Unit or nil }
+	table.insert(Home.lessons, 1, lesson)
+	while #Home.lessons > Home.MAX_LESSONS do
+		table.remove(Home.lessons)
+	end
+	Home.dispatch(lesson)
+end
+
+-- записываем твой путь (вызывается каждый тик)
+function Home.record(now)
+	local char = player.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	if not root or not hum or hum.Health <= 0 then
+		return
+	end
+	local _, near = Home.nearestDoor(root.Position)
+	if near == math.huge then
+		Home.trip, Home.anchor, Home.lastSample = nil, nil, nil -- дверей нет — учить некого
+		return
+	end
+	local feet = root.Position - Vector3.new(0, hum.HipHeight + root.Size.Y / 2, 0) -- точка под ногами
+	local teleported = Home.lastSample ~= nil and (root.Position - Home.lastSample).Magnitude > 25
+	Home.lastSample = root.Position
+	local riding = (cart ~= nil and cart.riding) or hum.Sit
+	local t = Home.trip
+
+	-- дома: запоминаем, откуда ты ушёл, и завершаем поход, если ты вернулся
+	if near < Home.LEARN_HOME then
+		if t and t.far and not t.done and not teleported and not riding then
+			Home.finishTrip("returned")
+		end
+		Home.trip = nil
+		Home.anchor = feet
+		Home.lastPt = feet
+		return
+	end
+
+	-- вдали от дома. Телепорт, вагонетка или сиденье — пешком так не пройти, маршрут не записываем до возвращения домой
+	if teleported or riding then
+		if t then
+			t.done = true
+		else
+			Home.trip = { done = true, pts = {} }
+		end
+		return
+	end
+	if not t then
+		if not Home.anchor then
+			Home.trip = { done = true, pts = {} } -- неизвестно, откуда ты пришёл
+			return
+		end
+		t = { pts = { Home.anchor }, far = false, maxD = 0, farIdx = 1, still = feet, stillAt = now }
+		Home.trip = t
+		Home.lastPt = Home.anchor
+	end
+	if t.done or hum.FloorMaterial == Enum.Material.Air then
+		return -- в прыжке и после готового урока не записываем
+	end
+	if (feet - Home.lastPt).Magnitude >= Home.STEP then
+		t.pts[#t.pts + 1] = feet
+		Home.lastPt = feet
+		if #t.pts > Home.MAX_TRAIL then
+			t.done = true -- слишком длинный путь
+			return
+		end
+	end
+	if near > t.maxD then
+		t.maxD = near
+		t.farIdx = #t.pts
+	end
+	if near >= Home.LEARN_FAR and not t.far then
+		t.far = true
+		t.farAt = now
+	end
+	if (feet - t.still).Magnitude > 5 then
+		t.still, t.stillAt = feet, now
+	end
+	-- далеко и стоишь на месте (или давно там) → это «место обучения»
+	if t.far and (now - t.stillAt > Home.LEARN_STAY or now - t.farAt > Home.LEARN_MAX_TIME) then
+		if (feet - Home.lastPt).Magnitude > 1 then
+			t.pts[#t.pts + 1] = feet
+		end
+		local lv = root.CFrame.LookVector
+		Home.finishTrip("stayed", Vector3.new(lv.X, 0, lv.Z))
+	end
+end
+
+-- отправить жителей учиться (каждый стартует чуть позже остальных)
+function Home.dispatch(lesson)
+	local count = 0
+	for _, n in ipairs(Home.npcs) do
+		if Home.alive(n) and math.random() < Home.LEARN_CHANCE then
+			n.pending = lesson
+			n.pendingAt = os.clock() + math.random() * 4
+			count += 1
+		end
+	end
+	if count > 0 and toast then
+		toast("👀 Жители идут по твоему маршруту — учатся!", C.accent)
+	end
+end
+
+-- идти ТОЧНО по маршруту (точка за точкой); reverse — с конца в начало. true — дошёл до конца.
+-- Если застрял, прыгает, а потом «подтягивается» прямо на маршрут — чтобы не ошибиться ни на шаг.
+function Home.followRoute(n, pts, reverse)
+	local hum, root = n.hum, n.root
+	local last, step, i = #pts, 1, 1
+	if reverse then
+		last, step, i = 1, -1, #pts
+	end
+	local lastPos, stuckSince = root.Position, os.clock()
+	while true do
+		if not Home.alive(n) or n.panic or not n.door.model.Parent then
+			return false -- паника, дверь убрали или жителя нет — обучение прерывается
+		end
+		hum.WalkSpeed = (n.speed or Home.WALK) * (n.fast and Home.FAST or 1)
+		local p = root.Position
+		while i ~= last and Vector3.new(p.X - pts[i].X, 0, p.Z - pts[i].Z).Magnitude < 2.5 do
+			i += step -- до этой точки уже дошли
+			stuckSince, lastPos = os.clock(), p
+		end
+		local target = pts[i]
+		if i == last and Vector3.new(p.X - target.X, 0, p.Z - target.Z).Magnitude < 2.5 then
+			return true
+		end
+		if (p - lastPos).Magnitude > 0.5 then
+			lastPos, stuckSince = p, os.clock()
+		else
+			local stuck = os.clock() - stuckSince
+			if stuck > 1 then
+				hum.Jump = true
+			end
+			if stuck > 2.5 then
+				root.CFrame = CFrame.new(target + Vector3.new(0, 3, 0))
+				lastPos, stuckSince = target, os.clock()
+			end
+		end
+		hum:MoveTo(target)
+		task.wait(0.1)
+	end
+end
+
+-- «учёба»: выйти из дома → пройти по маршруту → на месте удивиться → бегом обратно домой
+function Home.study(n, lesson)
+	local pts, d = lesson.pts, n.door
+	n.lock = true
+	local function finish()
+		n.lock = false
+		n.fast = n.panic == true
+		Home.setFace(n, nil)
+	end
+	-- 1) выйти из дома
+	if n.place == "in" then
+		local r = Home.walkTo(n, d.inGate, 1.2, 16)
+		if r ~= "ok" or not Home.passDoor(n, d.inGate, d.outGate) then
+			return finish()
+		end
+		n.place = "out"
+	end
+	if not Home.alive(n) or n.panic or not d.model.Parent then
+		return finish()
+	end
+	-- 2) к началу маршрута (если не дошёл за разумное время — переносим к началу, чтобы дальше всё шло без ошибок)
+	local r = Home.walkTo(n, pts[1], 2.5, 25)
+	if r ~= "ok" and Home.alive(n) and not n.panic then
+		n.root.CFrame = CFrame.new(pts[1] + Vector3.new(0, 3, 0))
+	end
+	-- 3) точно по твоему маршруту
+	if not Home.followRoute(n, pts, false) then
+		return finish()
+	end
+	-- 4) на месте: смотрят туда, куда смотрел ты, и удивляются
+	n.hum:MoveTo(n.root.Position)
+	Home.setFace(n, "amazed")
+	Home.bubble(n, "!")
+	if lesson.look then
+		Home.face(n, n.root.Position + lesson.look * 10)
+	end
+	local t0 = os.clock()
+	while Home.alive(n) and not n.panic and os.clock() - t0 < Home.STARE do
+		task.wait(0.2)
+	end
+	Home.setFace(n, nil)
+	if not Home.alive(n) or n.panic then
+		return finish()
+	end
+	-- 5) бегом обратно по тому же маршруту
+	n.fast = true
+	if not Home.followRoute(n, pts, true) then
+		return finish()
+	end
+	-- 6) домой
+	Home.walkTo(n, d.outGate, 1.5, 25)
+	if Home.passDoor(n, d.outGate, d.inGate) then
+		n.place = "in"
+		n.nextOut = os.clock() + math.random(12, 25)
+	else
+		n.wantDoor = true
+		n.backAt = os.clock() + 2
+	end
+	finish()
+end
+
 -- ----- Чужие рядом: чужой NPC пугает, объект с AnimationController вызывает панику -----
 -- что это за модель: "npc" — человек (Humanoid), "obj" — объект с AnimationController, "none" — просто модель
 function Home.kindOf(model, now)
@@ -2051,6 +2312,9 @@ function Home.returnHome(n)
 	if r ~= "ok" then
 		n.wantDoor = false
 		n.backAt = os.clock() + 6
+		if (n.root.Position - d.outGate).Magnitude > 40 then
+			n.root.CFrame = CFrame.new(d.outGate + Vector3.new(0, 3, 0)) -- слишком далеко от дома и путь не нашёлся — возвращаем к двери
+		end
 		return
 	end
 	n.lock = true
@@ -2127,12 +2391,25 @@ function Home.tick(n)
 	if not n.panic and n.faceKey == "terrified" and not n.lock then
 		Home.setFace(n, nil) -- паника кончилась — лицо снова обычное
 	end
+	local now = os.clock()
+	-- иногда сам идёт на выученное место
+	if not n.pending and #Home.lessons > 0 and now >= n.nextVisit then
+		n.nextVisit = now + math.random(Home.VISIT_MIN, Home.VISIT_MAX)
+		if math.random() < Home.VISIT_CHANCE then
+			n.pending = Home.lessons[math.random(1, #Home.lessons)]
+			n.pendingAt = now
+		end
+	end
 	if n.event then
 		Home.react(n)
 	elseif not n.door.model.Parent then
 		Home.rehome(n)
 	elseif n.panic then
 		Home.panicStep(n)
+	elseif n.pending and now >= n.pendingAt then
+		local lesson = n.pending
+		n.pending = nil
+		Home.study(n, lesson) -- идёт учиться по твоему маршруту
 	elseif n.place == "in" then
 		Home.insideStep(n)
 	else
@@ -2389,6 +2666,7 @@ function Home.spawnNpc(index)
 			model = model, hum = hum, root = root, door = door, alive = true, place = "in",
 			sounds = {}, anim = {}, seen = false, lastSeen = -99, lastWave = -99, lastScare = -99,
 			nextScan = os.clock() + math.random() * 0.8, panicUntil = 0, lastFear = -99, panic = false, fast = false,
+			pending = nil, pendingAt = 0, nextVisit = os.clock() + math.random(Home.VISIT_MIN, Home.VISIT_MAX),
 			nextOut = os.clock() + math.random(8, 20), backAt = 0,
 			speed = Home.WALK * (0.85 + math.random() * 0.4) * (small and 1.1 or 1), bornAt = os.clock(),
 			small = small, scale = scale, pitch = small and (1 + (1 - scale) * 0.7) or (0.92 + math.random() * 0.12), -- у малышей голос повыше
@@ -2455,6 +2733,7 @@ function Home.step(dt)
 	Home.acc = 0
 	local now = os.clock()
 	Home.stepDoors(now)
+	pcall(Home.record, now) -- записываем твой маршрут
 	for _, n in ipairs(Home.npcs) do
 		Home.perceive(n, now, tick)
 	end
