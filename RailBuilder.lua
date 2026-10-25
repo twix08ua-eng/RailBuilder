@@ -157,12 +157,15 @@ local Home = {
 	SCARE_DIST = 11,      -- ближе этого расстояния можно испугаться (студы)
 	SCARE_SPEED = 30,     -- так быстро (студов/с) нужно к жителю приблизиться, чтобы он испугался
 	SCARE_COOLDOWN = 40,  -- не чаще, чем раз в столько секунд
-	LEARN_HOME = 22,      -- ближе этого расстояния от двери ты «дома»
-	LEARN_FAR = 45,       -- дальше этого расстояния от двери жители захотят повторить твой маршрут...
-	LEARN_MAX = 120,      -- ...но только если ты не ушёл слишком далеко: дальше этого расстояния маршрут не запоминается
-	START_NEAR = 10,      -- маршрут начинается там, где ты в последний раз был ближе этого расстояния к двери
-	LEARN_STAY = 4,       -- столько секунд нужно простоять вдали, чтобы это место стало «местом обучения»
-	LEARN_MAX_TIME = 30,  -- или столько секунд пробыть вдали от дома
+	LEARN_HOME = 10,      -- ближе этого расстояния от двери ты «дома» (студы)
+	LEARN_FAR = 18,       -- дальше этого расстояния от двери жители захотят повторить твой маршрут...
+	LEARN_MAX = 100,      -- ...но только если ты не ушёл слишком далеко: дальше этого расстояния маршрут не запоминается
+	START_NEAR = 8,       -- маршрут начинается там, где ты в последний раз был ближе этого расстояния к двери
+	LEARN_STAY = 3,       -- столько секунд нужно простоять вдали, чтобы это место стало «местом обучения»
+	LEARN_MAX_TIME = 20,  -- или столько секунд пробыть вдали от дома
+	LEARN_COOLDOWN = 20,  -- новый урок не чаще, чем раз в столько секунд
+	MIN_POINTS = 6,       -- самый короткий маршрут, который можно выучить (точек; точка = STEP студов)
+	DEBUG = true,         -- писать в консоль (Output), что происходит с обучением; потом можно поставить false
 	LEARN_CHANCE = 1,     -- шанс, что житель пойдёт учиться (1 = каждый)
 	STARE = 5,            -- сколько секунд удивляются на месте
 	VISIT_MIN = 60,       -- как часто житель сам ходит на выученное место: от ... секунд
@@ -211,6 +214,7 @@ local Home = {
 	GREET = "Hi! 👋",      -- облачко над головой, когда здоровается
 	lessons = {},         -- выученные маршруты
 	recent = {},          -- последние шаги у дома (откуда начинается маршрут)
+	lastLesson = -100,
 	doors = {}, npcs = {}, spawning = 0, acc = 0, lastSync = 0, failedAt = -100,
 }
 
@@ -1874,6 +1878,13 @@ function Home.nearestDoor(pos)
 	return best, bestD
 end
 
+-- вывод в консоль (Output) для отладки обучения; выключается через Home.DEBUG = false
+function Home.log(...)
+	if Home.DEBUG then
+		print("[Обучение]", ...)
+	end
+end
+
 -- поход закончен: превращаем записанный путь в урок и отправляем жителей учиться
 function Home.finishTrip(why, look)
 	local t = Home.trip
@@ -1883,9 +1894,16 @@ function Home.finishTrip(why, look)
 	t.done = true
 	-- вернулся домой — «место обучения» это самая дальняя точка; остался на месте — последняя
 	local last = (why == "returned") and t.farIdx or #t.pts
-	if last < 8 then
-		return -- слишком короткий маршрут
+	if last < Home.MIN_POINTS then
+		Home.log("маршрут слишком короткий:", last, "точек (нужно хотя бы", Home.MIN_POINTS .. ")")
+		return
 	end
+	local now = os.clock()
+	if now - Home.lastLesson < Home.LEARN_COOLDOWN then
+		Home.log("урок был совсем недавно — пропускаю")
+		return
+	end
+	Home.lastLesson = now
 	if not look then
 		local a, b = t.pts[last - 1], t.pts[last]
 		look = Vector3.new(b.X - a.X, 0, b.Z - a.Z)
@@ -1899,6 +1917,7 @@ function Home.finishTrip(why, look)
 	while #Home.lessons > Home.MAX_LESSONS do
 		table.remove(Home.lessons)
 	end
+	Home.log("урок готов:", #pts, "точек, причина:", why, "; жителей:", #Home.npcs)
 	Home.dispatch(lesson)
 end
 
@@ -1953,11 +1972,7 @@ function Home.record(now)
 		return
 	end
 	if not t then
-		if not Home.anchor then
-			Home.trip = { done = true, pts = {} } -- неизвестно, откуда ты пришёл
-			return
-		end
-		-- маршрут начинается там, где ты последний раз был у двери (чтобы жители шли ровно от дома)
+		-- начало маршрута: там, где ты последний раз был у двери (так жители идут ровно от дома); если такого нет — отсюда
 		local pts, rec, startAt = {}, Home.recent, nil
 		for k = #rec, 1, -1 do
 			local _, dd = Home.nearestDoor(rec[k])
@@ -1971,12 +1986,14 @@ function Home.record(now)
 				pts[#pts + 1] = rec[k]
 			end
 		end
-		if #pts == 0 or (pts[#pts] - Home.anchor).Magnitude > 1 then
-			pts[#pts + 1] = Home.anchor
+		local from = Home.anchor or feet
+		if #pts == 0 or (pts[#pts] - from).Magnitude > 1 then
+			pts[#pts + 1] = from
 		end
 		t = { pts = pts, far = false, maxD = 0, farIdx = #pts, still = feet, stillAt = now }
 		Home.trip = t
 		Home.lastPt = pts[#pts]
+		Home.log("начал записывать маршрут; до двери", math.floor(near))
 	end
 	if t.done then
 		return
@@ -1984,6 +2001,10 @@ function Home.record(now)
 	-- слишком далеко от дома — такой маршрут не запоминаем (только «далеко, но не сильно»)
 	if near > Home.LEARN_MAX then
 		t.done = true
+		Home.log("слишком далеко от дома:", math.floor(near), "(можно не дальше", Home.LEARN_MAX .. ")")
+		if toast then
+			toast("🚫 Слишком далеко от дома — жители не запомнят этот маршрут", C.warn)
+		end
 		return
 	end
 	if not hit or hum.FloorMaterial == Enum.Material.Air then
@@ -2004,6 +2025,10 @@ function Home.record(now)
 	if near >= Home.LEARN_FAR and not t.far then
 		t.far = true
 		t.farAt = now
+		Home.log("ты далеко от дома:", math.floor(near), "— постой на месте или вернись")
+		if toast and now - Home.lastLesson >= Home.LEARN_COOLDOWN then
+			toast("👣 Жители запоминают твой маршрут — постой на месте", C.accent)
+		end
 	end
 	if (feet - t.still).Magnitude > 5 then
 		t.still, t.stillAt = feet, now
@@ -2018,16 +2043,17 @@ function Home.record(now)
 	end
 end
 
--- отправить жителей учиться (каждый стартует чуть позже остальных)
+-- отправить жителей учиться (каждый стартует чуть позже остальных; кто уже учится — не трогаем)
 function Home.dispatch(lesson)
 	local count = 0
 	for _, n in ipairs(Home.npcs) do
-		if Home.alive(n) and math.random() < Home.LEARN_CHANCE then
+		if Home.alive(n) and not n.studyHL and math.random() < Home.LEARN_CHANCE then
 			n.pending = lesson
 			n.pendingAt = os.clock() + math.random() * 4
 			count += 1
 		end
 	end
+	Home.log("отправлено жителей:", count)
 	if count > 0 and toast then
 		toast("👀 Жители идут по твоему маршруту — учатся!", C.accent)
 	end
@@ -2129,6 +2155,7 @@ end
 function Home.study(n, lesson)
 	local d = n.door
 	n.lock = true
+	Home.log("житель идёт учиться; маршрут:", #lesson.pts, "точек")
 	n.studyHL = make("Highlight", {
 		FillColor = C.accent, FillTransparency = 0.6, OutlineColor = WHITE, OutlineTransparency = 0,
 		DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
@@ -2859,7 +2886,11 @@ function Home.step(dt)
 	Home.acc = 0
 	local now = os.clock()
 	Home.stepDoors(now)
-	pcall(Home.record, now) -- записываем твой маршрут
+	local ok, err = pcall(Home.record, now) -- записываем твой маршрут
+	if not ok and not Home.recordErr then
+		Home.recordErr = true -- пишем только один раз, чтобы не засорять консоль
+		warn("[Обучение] ошибка записи маршрута:", err)
+	end
 	for _, n in ipairs(Home.npcs) do
 		Home.perceive(n, now, tick)
 	end
