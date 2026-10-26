@@ -18,8 +18,8 @@
 -- и пугаются, только если ты появился совсем резко (потом смотрят на тебя, смеются и уходят гулять или к двери).
 -- Жители — R6, кожа бежевая, футболки из Home.SHIRTS, штаны из Home.PANTS (к штанам Sleep — футболка Sleep).
 -- НПС → ОБУЧЕНИЕ: когда построена дверь, в нижней панели рядом со «Строить» и «Слоты» появляется кнопка «НПС».
--- В ней раздел «Обучение» со слотами маршрутов: ⏺ запомнить маршрут (пройди его и нажми «Сохранить»), ▶ отправить жителей
--- по этому маршруту, 🗑 очистить. Жители идут точно по твоей линии (подсвечены Highlight), на месте удивляются (лицо amazed)
+-- В ней раздел «Обучение» со слотами маршрутов: «Запомнить» (пройди маршрут и нажми «Сохранить»), «Отправить» жителей
+-- по этому маршруту, «Очистить». Жители идут точно по твоей линии (подсвечены Highlight), на месте удивляются (лицо amazed)
 -- и бегом возвращаются домой; иногда сами ходят по сохранённым маршрутам (Home.VISIT_*).
 -- Маршруты хранятся вместе со слотом постройки (записи с кодом 6; серверный скрипт должен хранить записи целиком).
 -- Волосы — из Home.HAIRS. Мимика: лицо меняется по ситуации (готовится испугаться → испугался → перепугался / машет / рад / смеётся),
@@ -161,7 +161,8 @@ local Home = {
 	SCARE_COOLDOWN = 40,  -- не чаще, чем раз в столько секунд
 	ROUTE_MIN = 4,        -- самый короткий маршрут, который можно сохранить (точек; одна точка = STEP студов)
 	ROUTE_SLOTS = 5,      -- сколько слотов маршрутов в разделе «Обучение»
-	NPC_IMAGE = "rbxassetid://11084364514", -- картинка на кнопке «НПС»
+	NPC_IMAGE = "rbxassetid://6236978075", -- картинка на кнопке «НПС» в нижней панели
+	TITLE_IMAGE = "rbxassetid://11130226997", -- картинка в начале заголовка окна «НПС»
 	DEBUG = true,         -- писать в консоль (Output), что происходит с обучением; потом можно поставить false
 	LEARN_CHANCE = 1,     -- шанс, что житель пойдёт учиться (1 = каждый)
 	STARE = 5,            -- сколько секунд удивляются на месте
@@ -1985,7 +1986,7 @@ function Home.startRecord(slot)
 		Home.ui.showRec(true)
 		Home.ui.refresh()
 	end
-	toast("⏺ Запись пошла: пройди нужный путь и нажми «Сохранить»", C.bad)
+	toast("Запись пошла: пройди нужный путь и нажми «Сохранить»", C.bad)
 end
 
 -- закончить запись; save = true — сохранить в слот. Возвращает true, если маршрут сохранён.
@@ -2005,7 +2006,7 @@ function Home.stopRecord(save)
 			r.pts = rec.pts
 			Home.makeLesson(r, rec.look)
 			saved = true
-			toast("💾 Маршрут сохранён в слот " .. rec.slot, C.good)
+			toast("Маршрут сохранён в слот " .. rec.slot, C.good)
 		else
 			toast("Маршрут слишком короткий — пройди подальше", C.warn)
 		end
@@ -2065,7 +2066,7 @@ function Home.dispatch(lesson)
 	end
 	Home.log("отправлено жителей:", count)
 	if count > 0 and toast then
-		toast("👀 Жители идут по твоему маршруту — учатся!", C.accent)
+		toast("Жители идут по твоему маршруту — учатся!", C.accent)
 	end
 	return count
 end
@@ -2074,7 +2075,7 @@ end
 function Home.sendRoute(i)
 	local r = Home.routes[i]
 	if not r or #r.pts < Home.ROUTE_MIN or not r.lesson then
-		toast("В этом слоте нет маршрута — сначала запомни его (⏺)", C.warn)
+		toast("В этом слоте нет маршрута — сначала нажми «Запомнить»", C.warn)
 		return
 	end
 	if #Home.npcs == 0 then
@@ -4351,7 +4352,8 @@ local function buildSlotCards()
 end
 
 -- ===== Кнопка «НПС» (появляется, когда построена дверь) и раздел «Обучение» =====
--- В «Обучении» — слоты маршрутов: ⏺ записать свой путь, 💾 сохранить, ▶ отправить жителей, 🗑 очистить.
+-- В «Обучении» — слоты маршрутов. В каждом слоте один ровный ряд из трёх кнопок: Запомнить (записать свой путь и сохранить),
+-- Отправить (жители пойдут по маршруту) и Очистить.
 Home.npcBtn = dockButton(dock, "", "НПС", 3, 66)
 Decor.icon(Home.npcBtn, Home.NPC_IMAGE)
 Home.npcBtn.Visible = false
@@ -4375,29 +4377,35 @@ do
 	make("UISizeConstraint", { MaxSize = Vector2.new(420, 480) }, panel)
 	ui.scale = make("UIScale", {}, panel)
 
+	-- заголовок: в начале картинка, потом слово «НПС»
+	make("ImageLabel", {
+		Position = UDim2.fromOffset(18, 12), Size = UDim2.fromOffset(30, 30), BackgroundTransparency = 1,
+		Image = Home.TITLE_IMAGE, ScaleType = Enum.ScaleType.Fit,
+	}, panel)
 	label(panel, {
-		Position = UDim2.fromOffset(18, 12), Size = UDim2.new(1, -80, 0, 26), Font = Enum.Font.GothamBold, TextSize = 21,
-		TextXAlignment = Enum.TextXAlignment.Left, Text = "🧑 НПС",
+		Position = UDim2.fromOffset(56, 12), Size = UDim2.new(1, -170, 0, 30), Font = Enum.Font.GothamBold, TextSize = 22,
+		TextXAlignment = Enum.TextXAlignment.Left, Text = "НПС",
 	})
+	ui.closeBtn = button(panel, {
+		AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -14, 0, 12), Size = UDim2.fromOffset(86, 30),
+		Text = "Закрыть", TextSize = 13,
+	}, C.card)
+
 	-- раздел «Обучение»
 	local tab = make("Frame", {
-		Position = UDim2.fromOffset(18, 46), Size = UDim2.fromOffset(130, 28),
+		Position = UDim2.fromOffset(18, 52), Size = UDim2.fromOffset(130, 28),
 		BackgroundColor3 = C.accentDark, BorderSizePixel = 0,
 	}, panel)
 	corner(tab, 14)
-	label(tab, { Size = UDim2.fromScale(1, 1), Font = Enum.Font.GothamBold, TextSize = 13, Text = "🎓 Обучение" })
+	label(tab, { Size = UDim2.fromScale(1, 1), Font = Enum.Font.GothamBold, TextSize = 13, Text = "Обучение" })
 	label(panel, {
-		Position = UDim2.fromOffset(18, 80), Size = UDim2.new(1, -36, 0, 34), TextSize = 12, TextColor3 = C.sub,
+		Position = UDim2.fromOffset(18, 88), Size = UDim2.new(1, -36, 0, 34), TextSize = 12, TextColor3 = C.sub,
 		TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
-		Text = "⏺ — запомнить маршрут (пройди его сам и нажми «Сохранить»), ▶ — жители повторят его, 🗑 — очистить слот.",
+		Text = "Запомнить: пройди маршрут сам и нажми «Сохранить». Отправить: жители повторят его. Очистить: убрать маршрут из слота.",
 	})
-	ui.closeBtn = button(panel, {
-		AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -12, 0, 12), Size = UDim2.fromOffset(36, 36),
-		Text = "✕", TextSize = 16,
-	}, C.card)
 
 	local rlist = make("ScrollingFrame", {
-		Position = UDim2.fromOffset(12, 120), Size = UDim2.new(1, -24, 1, -170),
+		Position = UDim2.fromOffset(12, 128), Size = UDim2.new(1, -24, 1, -176),
 		BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 4,
 		ScrollBarImageColor3 = C.sub, CanvasSize = UDim2.new(),
 		AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y,
@@ -4408,39 +4416,40 @@ do
 		TextSize = 12, TextColor3 = C.sub, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
 	})
 
+	-- слоты маршрутов: сверху номер, название и сведения, снизу ровный ряд из трёх кнопок одинаковой ширины
 	for i = 1, Home.ROUTE_SLOTS do
-		local card = button(rlist, { Size = UDim2.new(1, -8, 0, 70), LayoutOrder = i }, C.card)
+		local card = button(rlist, { Size = UDim2.new(1, -8, 0, 100), LayoutOrder = i }, C.card)
 		local st = stroke(card, C.bad, 2, 1)
 		local badge = label(card, {
-			Position = UDim2.fromOffset(12, 16), Size = UDim2.fromOffset(38, 38),
+			Position = UDim2.fromOffset(12, 10), Size = UDim2.fromOffset(36, 36),
 			BackgroundTransparency = 0, BackgroundColor3 = C.bg,
-			Font = Enum.Font.GothamBold, TextSize = 18, Text = tostring(i),
+			Font = Enum.Font.GothamBold, TextSize = 17, Text = tostring(i),
 		})
-		corner(badge, 19)
+		corner(badge, 18)
 		label(card, {
-			Position = UDim2.fromOffset(62, 10), Size = UDim2.new(1, -170, 0, 24), Font = Enum.Font.GothamBold, TextSize = 16,
+			Position = UDim2.fromOffset(58, 9), Size = UDim2.new(1, -70, 0, 22), Font = Enum.Font.GothamBold, TextSize = 15,
 			TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = "Маршрут " .. i,
 		})
 		local info = label(card, {
-			Position = UDim2.fromOffset(62, 36), Size = UDim2.new(1, -170, 0, 22), TextSize = 12, TextColor3 = C.sub,
+			Position = UDim2.fromOffset(58, 31), Size = UDim2.new(1, -70, 0, 18), TextSize = 12, TextColor3 = C.sub,
 			RichText = true, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
 		})
-		local rec = button(card, {
-			AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -98, 0.5, 0), Size = UDim2.fromOffset(36, 36),
-			Text = "⏺", TextSize = 16,
-		}, C.badDark)
-		local play = button(card, {
-			AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -54, 0.5, 0), Size = UDim2.fromOffset(36, 36),
-			Text = "▶", TextSize = 16,
-		}, C.goodDark)
-		local trash = button(card, {
-			AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0), Size = UDim2.fromOffset(36, 36),
-			Text = "🗑", TextSize = 15,
-		}, C.bg)
-		ui.cards[i] = { card = card, stroke = st, badge = badge, info = info, rec = rec, play = play, trash = trash }
+		local row = make("Frame", {
+			Position = UDim2.fromOffset(12, 54), Size = UDim2.new(1, -24, 0, 36), BackgroundTransparency = 1,
+		}, card)
+		make("UIGridLayout", {
+			FillDirection = Enum.FillDirection.Horizontal, CellPadding = UDim2.fromOffset(8, 0),
+			CellSize = UDim2.new(1 / 3, -6, 1, 0), SortOrder = Enum.SortOrder.LayoutOrder,
+		}, row)
+		local rec = button(row, { LayoutOrder = 1, Text = "Запомнить", TextSize = 13 }, C.badDark)
+		local play = button(row, { LayoutOrder = 2, Text = "Отправить", TextSize = 13 }, C.goodDark)
+		local trash = button(row, { LayoutOrder = 3, Text = "Очистить", TextSize = 13 }, C.bg)
+		ui.cards[i] = {
+			card = card, stroke = st, badge = badge, info = info, rec = rec, play = play, trash = trash, armed = false,
+		}
 	end
 
-	-- обновить надписи в слотах
+	-- обновить надписи и вид кнопок в слотах
 	function ui.refresh()
 		for i, c in ipairs(ui.cards) do
 			local r = Home.routes[i]
@@ -4448,22 +4457,26 @@ do
 			local has = n >= Home.ROUTE_MIN
 			local recording = Home.rec ~= nil and Home.rec.slot == i
 			if recording then
-				c.info.Text = '<font color="#FF6060"><b>● идёт запись…</b></font>'
+				c.info.Text = '<font color="#FF6060"><b>Идёт запись…</b></font>'
 			elseif has then
-				c.info.Text = "📍 " .. n .. " точек · " .. math.floor(Home.routeLength(r.pts)) .. " студов"
+				c.info.Text = n .. " точек, " .. math.floor(Home.routeLength(r.pts)) .. " студов"
 			else
-				c.info.Text = "Пусто — нажми ⏺, чтобы запомнить"
+				c.info.Text = "Пусто"
 			end
-			c.play.Visible = has
+			setBase(c.play, has and C.goodDark or C.bg) -- нет маршрута — «Отправить» тусклая
+			c.play.TextColor3 = has and C.text or C.sub
+			setBase(c.trash, c.armed and C.badDark or C.bg)
+			c.trash.Text = c.armed and "Точно?" or "Очистить"
+			c.trash.TextColor3 = (has or c.armed) and C.text or C.sub
 			c.badge.BackgroundColor3 = has and C.good or C.bg
 			c.badge.TextColor3 = has and C.bg or C.text
 			tween(c.stroke, 0.15, { Transparency = recording and 0 or 1 })
 		end
 		if saveState == "off" then
-			ui.footer.Text = "⚠ Сохранение между заходами выключено: маршруты работают, но пропадут при выходе."
+			ui.footer.Text = "Сохранение между заходами выключено: маршруты работают, но пропадут при выходе."
 			ui.footer.TextColor3 = C.warn
 		else
-			ui.footer.Text = "💾 Маршруты сохраняются вместе со слотом постройки."
+			ui.footer.Text = "Маршруты сохраняются вместе со слотом постройки."
 			ui.footer.TextColor3 = C.sub
 		end
 	end
@@ -4491,31 +4504,34 @@ do
 		end
 	end
 
-	-- панелька «идёт запись» (слева сверху)
+	-- панелька «идёт запись» (слева сверху): заголовок, сведения и два ровных кнопки внизу
 	ui.hud = make("Frame", {
-		Position = UDim2.fromOffset(14, 10), Size = UDim2.fromOffset(240, 88),
+		Position = UDim2.fromOffset(14, 10), Size = UDim2.fromOffset(240, 92),
 		BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false, ZIndex = 6,
 	}, root)
 	corner(ui.hud, 16)
 	stroke(ui.hud, C.bad, 2, 0.2)
 	label(ui.hud, {
 		Position = UDim2.fromOffset(14, 8), Size = UDim2.new(1, -28, 0, 20), Font = Enum.Font.GothamBold, TextSize = 14,
-		TextColor3 = C.bad, TextXAlignment = Enum.TextXAlignment.Left, Text = "⏺ ЗАПИСЬ МАРШРУТА",
+		TextColor3 = C.bad, TextXAlignment = Enum.TextXAlignment.Left, Text = "ЗАПИСЬ МАРШРУТА",
 	})
 	ui.hudInfo = label(ui.hud, {
 		Position = UDim2.fromOffset(14, 30), Size = UDim2.new(1, -28, 0, 16), TextSize = 12, TextColor3 = C.sub,
 		TextXAlignment = Enum.TextXAlignment.Left,
 	})
-	ui.recSave = button(ui.hud, {
-		Position = UDim2.fromOffset(12, 52), Size = UDim2.fromOffset(138, 28), Text = "💾 Сохранить", TextSize = 13,
-	}, C.goodDark)
-	ui.recCancel = button(ui.hud, {
-		Position = UDim2.fromOffset(158, 52), Size = UDim2.fromOffset(70, 28), Text = "✖", TextSize = 14,
-	}, C.badDark)
+	local hrow = make("Frame", {
+		Position = UDim2.fromOffset(12, 52), Size = UDim2.new(1, -24, 0, 30), BackgroundTransparency = 1,
+	}, ui.hud)
+	make("UIGridLayout", {
+		FillDirection = Enum.FillDirection.Horizontal, CellPadding = UDim2.fromOffset(8, 0),
+		CellSize = UDim2.new(0.5, -4, 1, 0), SortOrder = Enum.SortOrder.LayoutOrder,
+	}, hrow)
+	ui.recSave = button(hrow, { LayoutOrder = 1, Text = "Сохранить", TextSize = 13 }, C.goodDark)
+	ui.recCancel = button(hrow, { LayoutOrder = 2, Text = "Отмена", TextSize = 13 }, C.badDark)
 	function ui.updateRec()
 		local rec = Home.rec
 		if rec then
-			ui.hudInfo.Text = "Слот " .. rec.slot .. " · " .. #rec.pts .. " точек · " .. math.floor(rec.length) .. " студов"
+			ui.hudInfo.Text = "Слот " .. rec.slot .. ": " .. #rec.pts .. " точек, " .. math.floor(rec.length) .. " студов"
 		end
 	end
 	function ui.showRec(on)
@@ -5163,7 +5179,7 @@ Home.ui.backdrop.Activated:Connect(function()
 	Home.ui.setOpen(false)
 end)
 for i, c in ipairs(Home.ui.cards) do
-	c.rec.Activated:Connect(function() -- ⏺ запомнить маршрут
+	c.rec.Activated:Connect(function() -- «Запомнить»: начать запись маршрута
 		if Home.rec then
 			toast("Сначала сохрани или отмени текущую запись", C.warn)
 			return
@@ -5174,43 +5190,38 @@ for i, c in ipairs(Home.ui.cards) do
 		end
 		Home.startRecord(i)
 	end)
-	c.play.Activated:Connect(function() -- ▶ отправить жителей
+	c.play.Activated:Connect(function() -- «Отправить»: жители идут по маршруту
 		Home.sendRoute(i)
 	end)
-	local armed = false
-	c.trash.Activated:Connect(function() -- 🗑 очистить (с подтверждением)
+	c.trash.Activated:Connect(function() -- «Очистить» (нужно нажать дважды)
 		if (Home.rec and Home.rec.slot == i) or #Home.routes[i].pts == 0 then
 			return
 		end
-		if not armed then
-			armed = true
-			c.trash.Text = "❓"
-			setBase(c.trash, C.badDark)
-			toast("Нажми ещё раз — маршрут " .. i .. " будет очищен", C.warn)
+		if not c.armed then
+			c.armed = true
+			Home.ui.refresh()
+			toast("Нажми ещё раз: маршрут " .. i .. " будет очищен", C.warn)
 			task.delay(2.5, function()
-				if armed then
-					armed = false
-					c.trash.Text = "🗑"
-					setBase(c.trash, C.bg)
+				if c.armed then
+					c.armed = false
+					Home.ui.refresh()
 				end
 			end)
 			return
 		end
-		armed = false
-		c.trash.Text = "🗑"
-		setBase(c.trash, C.bg)
+		c.armed = false
 		Home.routes[i] = { name = "Маршрут " .. i, pts = {} }
 		Home.ui.refresh()
 		markDirty()
-		toast("🗑 Маршрут " .. i .. " очищен", C.bad)
+		toast("Маршрут " .. i .. " очищен", C.bad)
 	end)
 end
-Home.ui.recSave.Activated:Connect(function() -- 💾 сохранить записанный маршрут
+Home.ui.recSave.Activated:Connect(function() -- «Сохранить» записанный маршрут
 	if Home.stopRecord(true) then
 		markDirty()
 	end
 end)
-Home.ui.recCancel.Activated:Connect(function() -- ✖ отменить запись
+Home.ui.recCancel.Activated:Connect(function() -- «Отмена»: не сохранять
 	Home.stopRecord(false)
 	toast("Запись отменена", C.sub)
 end)
