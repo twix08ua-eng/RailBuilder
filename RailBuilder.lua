@@ -17,9 +17,11 @@
 -- гуляют внутри, иногда выходят на улицу и возвращаются, машут тебе (шанс 40%), прыгают от радости у двери
 -- и пугаются, только если ты появился совсем резко (потом смотрят на тебя, смеются и уходят гулять или к двери).
 -- Жители — R6, кожа бежевая, футболки из Home.SHIRTS, штаны из Home.PANTS (к штанам Sleep — футболка Sleep).
--- ОБУЧЕНИЕ: если ты уходишь далеко от дома (Home.LEARN_FAR), но не слишком (Home.LEARN_MAX), и там остаёшься, жители выходят
--- и идут точно по линии твоего маршрута (подсвечены Highlight),
--- на месте удивляются (лицо amazed), потом бегом возвращаются домой по тому же пути; иногда ходят туда сами (Home.VISIT_*).
+-- НПС → ОБУЧЕНИЕ: когда построена дверь, в нижней панели рядом со «Строить» и «Слоты» появляется кнопка «НПС».
+-- В ней раздел «Обучение» со слотами маршрутов: ⏺ запомнить маршрут (пройди его и нажми «Сохранить»), ▶ отправить жителей
+-- по этому маршруту, 🗑 очистить. Жители идут точно по твоей линии (подсвечены Highlight), на месте удивляются (лицо amazed)
+-- и бегом возвращаются домой; иногда сами ходят по сохранённым маршрутам (Home.VISIT_*).
+-- Маршруты хранятся вместе со слотом постройки (записи с кодом 6; серверный скрипт должен хранить записи целиком).
 -- Волосы — из Home.HAIRS. Мимика: лицо меняется по ситуации (готовится испугаться → испугался → перепугался / машет / рад / смеётся),
 -- обычное лицо возвращается само; ID лиц лежат в Home.FACES.
 -- ЧУЖИЕ РЯДОМ: если близко чужой NPC (модель с Humanoid, не игрок и не житель) — жители пугаются, вскрикивают и убегают от него.
@@ -157,14 +159,9 @@ local Home = {
 	SCARE_DIST = 11,      -- ближе этого расстояния можно испугаться (студы)
 	SCARE_SPEED = 30,     -- так быстро (студов/с) нужно к жителю приблизиться, чтобы он испугался
 	SCARE_COOLDOWN = 40,  -- не чаще, чем раз в столько секунд
-	LEARN_HOME = 10,      -- ближе этого расстояния от двери ты «дома» (студы)
-	LEARN_FAR = 18,       -- дальше этого расстояния от двери жители захотят повторить твой маршрут...
-	LEARN_MAX = 100,      -- ...но только если ты не ушёл слишком далеко: дальше этого расстояния маршрут не запоминается
-	START_NEAR = 8,       -- маршрут начинается там, где ты в последний раз был ближе этого расстояния к двери
-	LEARN_STAY = 3,       -- столько секунд нужно простоять вдали, чтобы это место стало «местом обучения»
-	LEARN_MAX_TIME = 20,  -- или столько секунд пробыть вдали от дома
-	LEARN_COOLDOWN = 20,  -- новый урок не чаще, чем раз в столько секунд
-	MIN_POINTS = 6,       -- самый короткий маршрут, который можно выучить (точек; точка = STEP студов)
+	ROUTE_MIN = 4,        -- самый короткий маршрут, который можно сохранить (точек; одна точка = STEP студов)
+	ROUTE_SLOTS = 5,      -- сколько слотов маршрутов в разделе «Обучение»
+	NPC_IMAGE = "rbxassetid://11084364514", -- картинка на кнопке «НПС»
 	DEBUG = true,         -- писать в консоль (Output), что происходит с обучением; потом можно поставить false
 	LEARN_CHANCE = 1,     -- шанс, что житель пойдёт учиться (1 = каждый)
 	STARE = 5,            -- сколько секунд удивляются на месте
@@ -173,7 +170,6 @@ local Home = {
 	VISIT_CHANCE = 0.6,   -- и с каким шансом
 	STEP = 2.5,           -- через сколько студов записывается точка твоего маршрута
 	MAX_TRAIL = 600,      -- самый длинный маршрут (точек)
-	MAX_LESSONS = 3,      -- сколько выученных мест помнят
 	FEAR_RADIUS = 18,     -- чужой NPC (модель с Humanoid, не игрок) ближе этого расстояния пугает жителей — они убегают
 	FEAR_COOLDOWN = 15,   -- не чаще, чем раз в столько секунд
 	ALARM_RADIUS = 22,    -- объект с AnimationController ближе этого — паника: бегут вдвое быстрее к двери
@@ -212,9 +208,6 @@ local Home = {
 	},
 	shirtNext = math.random(0, 3),
 	GREET = "Hi! 👋",      -- облачко над головой, когда здоровается
-	lessons = {},         -- выученные маршруты
-	recent = {},          -- последние шаги у дома (откуда начинается маршрут)
-	lastLesson = -100,
 	doors = {}, npcs = {}, spawning = 0, acc = 0, lastSync = 0, failedAt = -100,
 }
 
@@ -263,8 +256,8 @@ local C = {
 }
 local TOUCH_ONLY = UserInputService.TouchEnabled and not UserInputService.MouseEnabled
 
-local KIND_CODE = { straight = 0, curve = 1, ramp = 2, sign = 3, loop = 4, decor = 5 }
-local CODE_KIND = { [0] = "straight", [1] = "curve", [2] = "ramp", [3] = "sign", [4] = "loop", [5] = "decor" }
+local KIND_CODE = { straight = 0, curve = 1, ramp = 2, sign = 3, loop = 4, decor = 5, route = 6 }
+local CODE_KIND = { [0] = "straight", [1] = "curve", [2] = "ramp", [3] = "sign", [4] = "loop", [5] = "decor", [6] = "route" }
 
 -- ===== Состояние =====
 local data = nil
@@ -1471,6 +1464,9 @@ function Home.attachDoor(m, cf)
 		Home.setOpen(d, not d.open)
 	end)
 	Home.doors[m] = d
+	if Home.refreshNpcBtn then
+		Home.refreshNpcBtn() -- появилась дверь — появляется кнопка «НПС»
+	end
 	return d
 end
 
@@ -1479,6 +1475,9 @@ function Home.detachDoor(m)
 	if d then
 		d.val:Destroy()
 		Home.doors[m] = nil
+		if Home.refreshNpcBtn then
+			Home.refreshNpcBtn()
+		end
 	end
 end
 
@@ -1486,9 +1485,7 @@ function Home.clearDoors()
 	for m in pairs(Home.doors) do
 		Home.detachDoor(m)
 	end
-	Home.lessons = {}
-	Home.recent = {}
-	Home.trip, Home.anchor, Home.lastSample = nil, nil, nil
+	Home.resetRoutes() -- маршруты принадлежат слоту постройки: при очистке/смене слота забываем
 end
 
 -- открыть / закрыть; autoClose — через сколько секунд закрыть самой (для жителей)
@@ -1885,165 +1882,178 @@ function Home.log(...)
 	end
 end
 
--- поход закончен: превращаем записанный путь в урок и отправляем жителей учиться
-function Home.finishTrip(why, look)
-	local t = Home.trip
-	if not t or t.done then
-		return
+-- ----- Маршруты: ты сам записываешь путь, жители его повторяют -----
+-- В разделе «НПС → Обучение» есть слоты маршрутов. В слоте нажимаешь ⏺, идёшь нужным путём и жмёшь «Сохранить» —
+-- маршрут запоминается (и сохраняется вместе со слотом постройки). Кнопка ▶ отправляет жителей по этому маршруту:
+-- они выходят из дома, идут точно по твоей линии (с подсветкой), на месте удивляются и бегом возвращаются.
+
+function Home.newRoutes()
+	local list = {}
+	for i = 1, Home.ROUTE_SLOTS do
+		list[i] = { name = "Маршрут " .. i, pts = {} }
 	end
-	t.done = true
-	-- вернулся домой — «место обучения» это самая дальняя точка; остался на месте — последняя
-	local last = (why == "returned") and t.farIdx or #t.pts
-	if last < Home.MIN_POINTS then
-		Home.log("маршрут слишком короткий:", last, "точек (нужно хотя бы", Home.MIN_POINTS .. ")")
-		return
+	return list
+end
+Home.routes = Home.newRoutes()
+
+function Home.routeLength(pts)
+	local len = 0
+	for i = 2, #pts do
+		len += (pts[i] - pts[i - 1]).Magnitude
 	end
-	local now = os.clock()
-	if now - Home.lastLesson < Home.LEARN_COOLDOWN then
-		Home.log("урок был совсем недавно — пропускаю")
-		return
-	end
-	Home.lastLesson = now
-	if not look then
-		local a, b = t.pts[last - 1], t.pts[last]
-		look = Vector3.new(b.X - a.X, 0, b.Z - a.Z)
-	end
-	local pts = {}
-	for i = 1, last do
-		pts[i] = t.pts[i]
-	end
-	local lesson = { pts = pts, look = (look.Magnitude > 0.1) and look.Unit or nil }
-	table.insert(Home.lessons, 1, lesson)
-	while #Home.lessons > Home.MAX_LESSONS do
-		table.remove(Home.lessons)
-	end
-	Home.log("урок готов:", #pts, "точек, причина:", why, "; жителей:", #Home.npcs)
-	Home.dispatch(lesson)
+	return len
 end
 
--- записываем твой путь (вызывается каждый тик)
-function Home.record(now)
+-- «урок» для жителей: точки маршрута и направление, куда смотреть на месте
+function Home.makeLesson(r, look)
+	local pts = r.pts
+	if not look and #pts >= 2 then
+		local a, b = pts[#pts - 1], pts[#pts]
+		look = Vector3.new(b.X - a.X, 0, b.Z - a.Z)
+	end
+	r.lesson = { pts = pts, look = (look and look.Magnitude > 0.1) and look.Unit or nil }
+end
+
+-- все готовые уроки (из слотов, где есть маршрут)
+function Home.lessonList()
+	local list = {}
+	for _, r in ipairs(Home.routes) do
+		if r.lesson and #r.pts >= Home.ROUTE_MIN then
+			list[#list + 1] = r.lesson
+		end
+	end
+	return list
+end
+
+-- маршрут ↔ строка (для сохранения вместе с постройкой)
+function Home.packRoute(pts)
+	local parts = {}
+	for i, p in ipairs(pts) do
+		parts[i] = string.format("%.1f,%.1f,%.1f", p.X, p.Y, p.Z)
+	end
+	return table.concat(parts, ";")
+end
+
+function Home.unpackRoute(str)
+	local pts = {}
+	if type(str) ~= "string" then
+		return pts
+	end
+	for x, y, z in str:gmatch("(-?[%d%.]+),(-?[%d%.]+),(-?[%d%.]+)") do
+		local fx, fy, fz = tonumber(x), tonumber(y), tonumber(z)
+		if fx and fy and fz and #pts < Home.MAX_TRAIL then
+			pts[#pts + 1] = Vector3.new(fx, fy, fz)
+		end
+	end
+	return pts
+end
+
+-- запись маршрута из сохранения: { 0, 0, 0, 0, 6, имя, "x,y,z;x,y,z;…", номер слота }
+function Home.loadRoute(r)
+	local i = r[8]
+	if type(i) ~= "number" or i < 1 or i > Home.ROUTE_SLOTS then
+		return
+	end
+	i = math.floor(i)
+	local rt = { name = (type(r[6]) == "string") and r[6] or ("Маршрут " .. i), pts = Home.unpackRoute(r[7]) }
+	if #rt.pts >= Home.ROUTE_MIN then
+		Home.makeLesson(rt)
+	end
+	Home.routes[i] = rt
+	if Home.ui then
+		Home.ui.refresh()
+	end
+end
+
+-- забываем маршруты (при смене слота постройки или очистке); если шла запись — она отменяется
+function Home.resetRoutes()
+	Home.rec = nil
+	Home.routes = Home.newRoutes()
+	if Home.ui then
+		Home.ui.showRec(false)
+		Home.ui.refresh()
+	end
+	if Home.refreshNpcBtn then
+		Home.refreshNpcBtn()
+	end
+end
+
+-- начать запись маршрута в слот
+function Home.startRecord(slot)
+	Home.rec = { slot = slot, pts = {}, length = 0, look = nil }
+	if Home.ui then
+		Home.ui.showRec(true)
+		Home.ui.refresh()
+	end
+	toast("⏺ Запись пошла: пройди нужный путь и нажми «Сохранить»", C.bad)
+end
+
+-- закончить запись; save = true — сохранить в слот. Возвращает true, если маршрут сохранён.
+function Home.stopRecord(save)
+	local rec = Home.rec
+	if not rec then
+		return false
+	end
+	Home.rec = nil
+	if Home.ui then
+		Home.ui.showRec(false)
+	end
+	local saved = false
+	if save then
+		if #rec.pts >= Home.ROUTE_MIN then
+			local r = Home.routes[rec.slot]
+			r.pts = rec.pts
+			Home.makeLesson(r, rec.look)
+			saved = true
+			toast("💾 Маршрут сохранён в слот " .. rec.slot, C.good)
+		else
+			toast("Маршрут слишком короткий — пройди подальше", C.warn)
+		end
+	end
+	if Home.ui then
+		Home.ui.refresh()
+	end
+	return saved
+end
+
+-- пока идёт запись: добавляем точки твоего пути (каждый тик)
+function Home.recordStep(now)
+	local rec = Home.rec
+	if not rec then
+		return
+	end
 	local char = player.Character
 	local root = char and char:FindFirstChild("HumanoidRootPart")
 	local hum = char and char:FindFirstChildOfClass("Humanoid")
 	if not root or not hum or hum.Health <= 0 then
 		return
 	end
-	local _, near = Home.nearestDoor(root.Position)
-	if near == math.huge then
-		Home.trip, Home.anchor, Home.lastSample = nil, nil, nil -- дверей нет — учить некого
-		Home.recent = {}
-		return
-	end
-	-- точка земли под тобой (лучом вниз — это точнее, чем считать по росту персонажа)
 	Home.rayParams.FilterDescendantsInstances = Home.filter()
-	local hit = workspace:Raycast(root.Position, Vector3.new(0, -12, 0), Home.rayParams)
-	local feet = hit and hit.Position or (root.Position - Vector3.new(0, 3, 0))
-	local teleported = Home.lastSample ~= nil and (root.Position - Home.lastSample).Magnitude > 25
-	Home.lastSample = root.Position
-	local riding = (cart ~= nil and cart.riding) or hum.Sit
-	local t = Home.trip
-
-	-- дома: запоминаем, откуда ты ушёл (и последние шаги у двери), и завершаем поход, если ты вернулся
-	if near < Home.LEARN_HOME then
-		if t and t.far and not t.done and not teleported and not riding then
-			Home.finishTrip("returned")
+	local hit = workspace:Raycast(root.Position, Vector3.new(0, -12, 0), Home.rayParams) -- точка земли под тобой
+	if not hit then
+		return
+	end
+	local feet = hit.Position
+	local last = rec.pts[#rec.pts]
+	if not last or (feet - last).Magnitude >= Home.STEP then
+		rec.pts[#rec.pts + 1] = feet
+		if last then
+			rec.length += (feet - last).Magnitude
 		end
-		Home.trip = nil
-		Home.anchor = feet
-		Home.lastPt = feet
-		local rec = Home.recent
-		if #rec == 0 or (feet - rec[#rec]).Magnitude >= Home.STEP then
-			rec[#rec + 1] = feet
-			if #rec > 40 then
-				table.remove(rec, 1)
+		if #rec.pts >= Home.MAX_TRAIL then
+			toast("Маршрут достиг предельной длины — сохраняю", C.warn)
+			if Home.stopRecord(true) then
+				Home.needSave = true -- сохранить в данные слота (это делает основной цикл)
 			end
-		end
-		return
-	end
-
-	-- вдали от дома. Телепорт, вагонетка или сиденье — пешком так не пройти, маршрут не записываем до возвращения домой
-	if teleported or riding then
-		if t then
-			t.done = true
-		else
-			Home.trip = { done = true, pts = {} }
-		end
-		return
-	end
-	if not t then
-		-- начало маршрута: там, где ты последний раз был у двери (так жители идут ровно от дома); если такого нет — отсюда
-		local pts, rec, startAt = {}, Home.recent, nil
-		for k = #rec, 1, -1 do
-			local _, dd = Home.nearestDoor(rec[k])
-			if dd < Home.START_NEAR then
-				startAt = k
-				break
-			end
-		end
-		if startAt then
-			for k = startAt, #rec do
-				pts[#pts + 1] = rec[k]
-			end
-		end
-		local from = Home.anchor or feet
-		if #pts == 0 or (pts[#pts] - from).Magnitude > 1 then
-			pts[#pts + 1] = from
-		end
-		t = { pts = pts, far = false, maxD = 0, farIdx = #pts, still = feet, stillAt = now }
-		Home.trip = t
-		Home.lastPt = pts[#pts]
-		Home.log("начал записывать маршрут; до двери", math.floor(near))
-	end
-	if t.done then
-		return
-	end
-	-- слишком далеко от дома — такой маршрут не запоминаем (только «далеко, но не сильно»)
-	if near > Home.LEARN_MAX then
-		t.done = true
-		Home.log("слишком далеко от дома:", math.floor(near), "(можно не дальше", Home.LEARN_MAX .. ")")
-		if toast then
-			toast("🚫 Слишком далеко от дома — жители не запомнят этот маршрут", C.warn)
-		end
-		return
-	end
-	if not hit or hum.FloorMaterial == Enum.Material.Air then
-		return -- в прыжке не записываем
-	end
-	if (feet - Home.lastPt).Magnitude >= Home.STEP then
-		t.pts[#t.pts + 1] = feet
-		Home.lastPt = feet
-		if #t.pts > Home.MAX_TRAIL then
-			t.done = true -- слишком длинный путь
 			return
 		end
 	end
-	if near > t.maxD then
-		t.maxD = near
-		t.farIdx = #t.pts
-	end
-	if near >= Home.LEARN_FAR and not t.far then
-		t.far = true
-		t.farAt = now
-		Home.log("ты далеко от дома:", math.floor(near), "— постой на месте или вернись")
-		if toast and now - Home.lastLesson >= Home.LEARN_COOLDOWN then
-			toast("👣 Жители запоминают твой маршрут — постой на месте", C.accent)
-		end
-	end
-	if (feet - t.still).Magnitude > 5 then
-		t.still, t.stillAt = feet, now
-	end
-	-- далеко (но не слишком) и стоишь на месте или давно там → это «место обучения»
-	if t.far and (now - t.stillAt > Home.LEARN_STAY or now - t.farAt > Home.LEARN_MAX_TIME) then
-		if (feet - Home.lastPt).Magnitude > 1 then
-			t.pts[#t.pts + 1] = feet
-		end
-		local lv = root.CFrame.LookVector
-		Home.finishTrip("stayed", Vector3.new(lv.X, 0, lv.Z))
-	end
+	local lv = root.CFrame.LookVector
+	rec.look = Vector3.new(lv.X, 0, lv.Z) -- куда ты смотришь: так же будут смотреть жители на месте
 end
 
--- отправить жителей учиться (каждый стартует чуть позже остальных; кто уже учится — не трогаем)
+-- отправить жителей по готовому уроку (каждый стартует чуть позже остальных; кто уже учится — не трогаем).
+-- Возвращает, скольким жителям дали задание.
 function Home.dispatch(lesson)
 	local count = 0
 	for _, n in ipairs(Home.npcs) do
@@ -2056,6 +2066,23 @@ function Home.dispatch(lesson)
 	Home.log("отправлено жителей:", count)
 	if count > 0 and toast then
 		toast("👀 Жители идут по твоему маршруту — учатся!", C.accent)
+	end
+	return count
+end
+
+-- кнопка ▶ в слоте: отправить жителей по сохранённому маршруту
+function Home.sendRoute(i)
+	local r = Home.routes[i]
+	if not r or #r.pts < Home.ROUTE_MIN or not r.lesson then
+		toast("В этом слоте нет маршрута — сначала запомни его (⏺)", C.warn)
+		return
+	end
+	if #Home.npcs == 0 then
+		toast("Жителей пока нет — они появляются у двери, подожди немного", C.warn)
+		return
+	end
+	if Home.dispatch(r.lesson) == 0 then
+		toast("Все жители сейчас заняты — попробуй чуть позже", C.warn)
 	end
 end
 
@@ -2536,10 +2563,11 @@ function Home.tick(n)
 	end
 	local now = os.clock()
 	-- иногда сам идёт на выученное место
-	if not n.pending and #Home.lessons > 0 and now >= n.nextVisit then
+	if not n.pending and now >= n.nextVisit then
 		n.nextVisit = now + math.random(Home.VISIT_MIN, Home.VISIT_MAX)
-		if math.random() < Home.VISIT_CHANCE then
-			n.pending = Home.lessons[math.random(1, #Home.lessons)]
+		local lessons = Home.lessonList()
+		if #lessons > 0 and math.random() < Home.VISIT_CHANCE then
+			n.pending = lessons[math.random(1, #lessons)]
 			n.pendingAt = now
 		end
 	end
@@ -2886,10 +2914,13 @@ function Home.step(dt)
 	Home.acc = 0
 	local now = os.clock()
 	Home.stepDoors(now)
-	local ok, err = pcall(Home.record, now) -- записываем твой маршрут
+	local ok, err = pcall(Home.recordStep, now) -- если идёт запись маршрута — добавляем точки
 	if not ok and not Home.recordErr then
 		Home.recordErr = true -- пишем только один раз, чтобы не засорять консоль
 		warn("[Обучение] ошибка записи маршрута:", err)
+	end
+	if Home.rec and Home.ui then
+		Home.ui.updateRec()
 	end
 	for _, n in ipairs(Home.npcs) do
 		Home.perceive(n, now, tick)
@@ -3043,6 +3074,12 @@ local function serialize()
 			end
 		end
 	end
+	-- маршруты жителей: { 0, 0, 0, 0, 6, имя, "x,y,z;x,y,z;…", номер слота }
+	for i, r in ipairs(Home.routes) do
+		if #r.pts >= Home.ROUTE_MIN then
+			out[#out + 1] = { 0, 0, 0, 0, KIND_CODE.route, r.name, Home.packRoute(r.pts), i }
+		end
+	end
 	return out
 end
 
@@ -3066,7 +3103,9 @@ end
 
 local function loadRails(rails)
 	for i, r in ipairs(rails) do
-		if type(r) == "table"
+		if type(r) == "table" and r[5] == KIND_CODE.route then
+			Home.loadRoute(r) -- это не рельса, а сохранённый маршрут
+		elseif type(r) == "table"
 			and type(r[1]) == "number" and type(r[2]) == "number"
 			and type(r[3]) == "number" and type(r[4]) == "number"
 			and railCount < MAX_RAILS then
@@ -3711,11 +3750,11 @@ setBase(buildBtn, C.goodDark)
 local slotsBtn = dockButton(dock, "📁", "Слоты", 2)
 local divider = make("Frame", {
 	Size = UDim2.fromOffset(2, 44), BackgroundColor3 = WHITE, BackgroundTransparency = 0.88,
-	BorderSizePixel = 0, LayoutOrder = 3, Visible = false,
+	BorderSizePixel = 0, LayoutOrder = 4, Visible = false,
 }, dock)
 local tools = make("Frame", {
 	Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.XY,
-	BackgroundTransparency = 1, LayoutOrder = 4, Visible = false,
+	BackgroundTransparency = 1, LayoutOrder = 5, Visible = false,
 }, dock)
 make("UIListLayout", {
 	FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
@@ -4176,6 +4215,9 @@ refreshSlots = function()
 end
 
 local function setSlotsOpen(on)
+	if on and Home.ui and Home.ui.isOpen then
+		Home.ui.setOpen(false) -- «НПС» и «Слоты» не открываются одновременно
+	end
 	slotsOpen = on
 	setActive(slotsBtn, on, C.accentDark)
 	if on then
@@ -4306,6 +4348,183 @@ local function buildSlotCards()
 
 		cards[i] = { card = card, stroke = st, badge = badge, name = nameL, info = info }
 	end
+end
+
+-- ===== Кнопка «НПС» (появляется, когда построена дверь) и раздел «Обучение» =====
+-- В «Обучении» — слоты маршрутов: ⏺ записать свой путь, 💾 сохранить, ▶ отправить жителей, 🗑 очистить.
+Home.npcBtn = dockButton(dock, "", "НПС", 3, 66)
+Decor.icon(Home.npcBtn, Home.NPC_IMAGE)
+Home.npcBtn.Visible = false
+function Home.refreshNpcBtn()
+	Home.npcBtn.Visible = next(Home.doors) ~= nil and not buildMode -- есть хотя бы одна дверь (в режиме строительства кнопка прячется)
+end
+
+Home.ui = { isOpen = false, cards = {} }
+do
+	local ui = Home.ui
+	ui.backdrop = make("TextButton", {
+		Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 1,
+		AutoButtonColor = false, Text = "", Visible = false, ZIndex = 5,
+	}, root)
+	local panel = make("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.new(0, 420, 0.9, 0), BackgroundColor3 = C.panel, BorderSizePixel = 0, Active = true,
+	}, ui.backdrop)
+	corner(panel, 18)
+	stroke(panel, WHITE, 1, 0.85)
+	make("UISizeConstraint", { MaxSize = Vector2.new(420, 480) }, panel)
+	ui.scale = make("UIScale", {}, panel)
+
+	label(panel, {
+		Position = UDim2.fromOffset(18, 12), Size = UDim2.new(1, -80, 0, 26), Font = Enum.Font.GothamBold, TextSize = 21,
+		TextXAlignment = Enum.TextXAlignment.Left, Text = "🧑 НПС",
+	})
+	-- раздел «Обучение»
+	local tab = make("Frame", {
+		Position = UDim2.fromOffset(18, 46), Size = UDim2.fromOffset(130, 28),
+		BackgroundColor3 = C.accentDark, BorderSizePixel = 0,
+	}, panel)
+	corner(tab, 14)
+	label(tab, { Size = UDim2.fromScale(1, 1), Font = Enum.Font.GothamBold, TextSize = 13, Text = "🎓 Обучение" })
+	label(panel, {
+		Position = UDim2.fromOffset(18, 80), Size = UDim2.new(1, -36, 0, 34), TextSize = 12, TextColor3 = C.sub,
+		TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
+		Text = "⏺ — запомнить маршрут (пройди его сам и нажми «Сохранить»), ▶ — жители повторят его, 🗑 — очистить слот.",
+	})
+	ui.closeBtn = button(panel, {
+		AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -12, 0, 12), Size = UDim2.fromOffset(36, 36),
+		Text = "✕", TextSize = 16,
+	}, C.card)
+
+	local rlist = make("ScrollingFrame", {
+		Position = UDim2.fromOffset(12, 120), Size = UDim2.new(1, -24, 1, -170),
+		BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 4,
+		ScrollBarImageColor3 = C.sub, CanvasSize = UDim2.new(),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y,
+	}, panel)
+	make("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }, rlist)
+	ui.footer = label(panel, {
+		AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 18, 1, -10), Size = UDim2.new(1, -36, 0, 32),
+		TextSize = 12, TextColor3 = C.sub, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
+	})
+
+	for i = 1, Home.ROUTE_SLOTS do
+		local card = button(rlist, { Size = UDim2.new(1, -8, 0, 70), LayoutOrder = i }, C.card)
+		local st = stroke(card, C.bad, 2, 1)
+		local badge = label(card, {
+			Position = UDim2.fromOffset(12, 16), Size = UDim2.fromOffset(38, 38),
+			BackgroundTransparency = 0, BackgroundColor3 = C.bg,
+			Font = Enum.Font.GothamBold, TextSize = 18, Text = tostring(i),
+		})
+		corner(badge, 19)
+		label(card, {
+			Position = UDim2.fromOffset(62, 10), Size = UDim2.new(1, -170, 0, 24), Font = Enum.Font.GothamBold, TextSize = 16,
+			TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = "Маршрут " .. i,
+		})
+		local info = label(card, {
+			Position = UDim2.fromOffset(62, 36), Size = UDim2.new(1, -170, 0, 22), TextSize = 12, TextColor3 = C.sub,
+			RichText = true, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+		})
+		local rec = button(card, {
+			AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -98, 0.5, 0), Size = UDim2.fromOffset(36, 36),
+			Text = "⏺", TextSize = 16,
+		}, C.badDark)
+		local play = button(card, {
+			AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -54, 0.5, 0), Size = UDim2.fromOffset(36, 36),
+			Text = "▶", TextSize = 16,
+		}, C.goodDark)
+		local trash = button(card, {
+			AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0), Size = UDim2.fromOffset(36, 36),
+			Text = "🗑", TextSize = 15,
+		}, C.bg)
+		ui.cards[i] = { card = card, stroke = st, badge = badge, info = info, rec = rec, play = play, trash = trash }
+	end
+
+	-- обновить надписи в слотах
+	function ui.refresh()
+		for i, c in ipairs(ui.cards) do
+			local r = Home.routes[i]
+			local n = r and #r.pts or 0
+			local has = n >= Home.ROUTE_MIN
+			local recording = Home.rec ~= nil and Home.rec.slot == i
+			if recording then
+				c.info.Text = '<font color="#FF6060"><b>● идёт запись…</b></font>'
+			elseif has then
+				c.info.Text = "📍 " .. n .. " точек · " .. math.floor(Home.routeLength(r.pts)) .. " студов"
+			else
+				c.info.Text = "Пусто — нажми ⏺, чтобы запомнить"
+			end
+			c.play.Visible = has
+			c.badge.BackgroundColor3 = has and C.good or C.bg
+			c.badge.TextColor3 = has and C.bg or C.text
+			tween(c.stroke, 0.15, { Transparency = recording and 0 or 1 })
+		end
+		if saveState == "off" then
+			ui.footer.Text = "⚠ Сохранение между заходами выключено: маршруты работают, но пропадут при выходе."
+			ui.footer.TextColor3 = C.warn
+		else
+			ui.footer.Text = "💾 Маршруты сохраняются вместе со слотом постройки."
+			ui.footer.TextColor3 = C.sub
+		end
+	end
+
+	function ui.setOpen(on)
+		ui.isOpen = on
+		setActive(Home.npcBtn, on, C.accentDark)
+		if on then
+			if slotsOpen then
+				setSlotsOpen(false)
+			end
+			ui.refresh()
+			ui.backdrop.Visible = true
+			ui.scale.Scale = 0.88
+			tween(ui.backdrop, 0.2, { BackgroundTransparency = 0.45 })
+			tween(ui.scale, 0.3, { Scale = 1 }, Enum.EasingStyle.Back)
+		else
+			local tw = tween(ui.backdrop, 0.15, { BackgroundTransparency = 1 })
+			tween(ui.scale, 0.15, { Scale = 0.92 })
+			tw.Completed:Once(function()
+				if not ui.isOpen then
+					ui.backdrop.Visible = false
+				end
+			end)
+		end
+	end
+
+	-- панелька «идёт запись» (слева сверху)
+	ui.hud = make("Frame", {
+		Position = UDim2.fromOffset(14, 10), Size = UDim2.fromOffset(240, 88),
+		BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false, ZIndex = 6,
+	}, root)
+	corner(ui.hud, 16)
+	stroke(ui.hud, C.bad, 2, 0.2)
+	label(ui.hud, {
+		Position = UDim2.fromOffset(14, 8), Size = UDim2.new(1, -28, 0, 20), Font = Enum.Font.GothamBold, TextSize = 14,
+		TextColor3 = C.bad, TextXAlignment = Enum.TextXAlignment.Left, Text = "⏺ ЗАПИСЬ МАРШРУТА",
+	})
+	ui.hudInfo = label(ui.hud, {
+		Position = UDim2.fromOffset(14, 30), Size = UDim2.new(1, -28, 0, 16), TextSize = 12, TextColor3 = C.sub,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	})
+	ui.recSave = button(ui.hud, {
+		Position = UDim2.fromOffset(12, 52), Size = UDim2.fromOffset(138, 28), Text = "💾 Сохранить", TextSize = 13,
+	}, C.goodDark)
+	ui.recCancel = button(ui.hud, {
+		Position = UDim2.fromOffset(158, 52), Size = UDim2.fromOffset(70, 28), Text = "✖", TextSize = 14,
+	}, C.badDark)
+	function ui.updateRec()
+		local rec = Home.rec
+		if rec then
+			ui.hudInfo.Text = "Слот " .. rec.slot .. " · " .. #rec.pts .. " точек · " .. math.floor(rec.length) .. " студов"
+		end
+	end
+	function ui.showRec(on)
+		ui.hud.Visible = on
+		if on then
+			ui.updateRec()
+		end
+	end
+	ui.refresh()
 end
 
 pill.Activated:Connect(function()
@@ -4783,6 +5002,9 @@ function Decor.setOpen(on)
 	Decor.dock.Visible = on
 	if on then
 		setSlotsOpen(false)
+		if Home.ui and Home.ui.isOpen then
+			Home.ui.setOpen(false)
+		end
 		Decor.dock.Position = UDim2.new(0.5, 0, 1, 140)
 		tween(Decor.dock, 0.4, { Position = UDim2.new(0.5, 0, 1, -14) }, Enum.EasingStyle.Back)
 		FUI.card.Visible = false
@@ -4814,11 +5036,16 @@ function Decor.select(key)
 end
 
 local function setBuildMode(on)
+	if on and Home.rec then
+		toast("Сначала сохрани или отмени запись маршрута", C.warn)
+		return
+	end
 	if not on then
 		Decor.setOpen(false) -- выходим из строительства — возвращаем обычную панель
 	end
 	buildMode = on
 	Home.setBuild(on) -- в режиме строительства кнопки дверей отключены
+	Home.refreshNpcBtn() -- и кнопка «НПС» тоже прячется
 	allHL.Enabled = on
 	tools.Visible = on
 	divider.Visible = on
@@ -4924,6 +5151,69 @@ for key, card in pairs(Decor.cards) do
 		Decor.select(key)
 	end)
 end
+
+-- ===== НПС: раздел «Обучение» =====
+Home.npcBtn.Activated:Connect(function()
+	Home.ui.setOpen(not Home.ui.isOpen)
+end)
+Home.ui.closeBtn.Activated:Connect(function()
+	Home.ui.setOpen(false)
+end)
+Home.ui.backdrop.Activated:Connect(function()
+	Home.ui.setOpen(false)
+end)
+for i, c in ipairs(Home.ui.cards) do
+	c.rec.Activated:Connect(function() -- ⏺ запомнить маршрут
+		if Home.rec then
+			toast("Сначала сохрани или отмени текущую запись", C.warn)
+			return
+		end
+		Home.ui.setOpen(false)
+		if buildMode then
+			setBuildMode(false)
+		end
+		Home.startRecord(i)
+	end)
+	c.play.Activated:Connect(function() -- ▶ отправить жителей
+		Home.sendRoute(i)
+	end)
+	local armed = false
+	c.trash.Activated:Connect(function() -- 🗑 очистить (с подтверждением)
+		if (Home.rec and Home.rec.slot == i) or #Home.routes[i].pts == 0 then
+			return
+		end
+		if not armed then
+			armed = true
+			c.trash.Text = "❓"
+			setBase(c.trash, C.badDark)
+			toast("Нажми ещё раз — маршрут " .. i .. " будет очищен", C.warn)
+			task.delay(2.5, function()
+				if armed then
+					armed = false
+					c.trash.Text = "🗑"
+					setBase(c.trash, C.bg)
+				end
+			end)
+			return
+		end
+		armed = false
+		c.trash.Text = "🗑"
+		setBase(c.trash, C.bg)
+		Home.routes[i] = { name = "Маршрут " .. i, pts = {} }
+		Home.ui.refresh()
+		markDirty()
+		toast("🗑 Маршрут " .. i .. " очищен", C.bad)
+	end)
+end
+Home.ui.recSave.Activated:Connect(function() -- 💾 сохранить записанный маршрут
+	if Home.stopRecord(true) then
+		markDirty()
+	end
+end)
+Home.ui.recCancel.Activated:Connect(function() -- ✖ отменить запись
+	Home.stopRecord(false)
+	toast("Запись отменена", C.sub)
+end)
 
 -- ===== Ввод =====
 local TOOL_KEYS = {
@@ -5034,6 +5324,10 @@ player.CharacterRemoving:Connect(function()
 end)
 
 RunService.RenderStepped:Connect(function(dt)
+	if Home.needSave then
+		Home.needSave = false
+		markDirty() -- маршрут сохранился сам (дошёл до предельной длины)
+	end
 	if Decor.open then
 		Decor.spin(dt) -- модели в карточках крутятся
 	end
