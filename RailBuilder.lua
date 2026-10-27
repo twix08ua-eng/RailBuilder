@@ -8,7 +8,7 @@
 -- на землю, на рельсы или на нужную высоту (E / Q). R — повернуть (шаг 15°), кнопка «Назад» — вернуть обычную панель.
 -- Модели по ID (таблица MODELS) из LocalScript загрузить нельзя (InsertService работает только на сервере),
 -- поэтому каждое украшение собрано из деталей прямо в этом скрипте.
--- Украшений 19: Halloween (тыква, сено, надгробие, привидение, череп, котёл), Новый год (ёлка, подарок, снеговик, леденец),
+-- Украшения: Дом (дверь, стена), Котость, Вода, Halloween (тыква, сено, надгробие, котёл), Новый год (ёлка, подарок, снеговик),
 -- природа (куст, гриб, камень, цветы, костёр) и разное (забор, бочка, ящик, фонарь). Список листается стрелками по бокам.
 -- Украшения сохраняются вместе с рельсами: в записи (6-е значение) лежит название украшения.
 --
@@ -91,16 +91,15 @@ local Decor = {
 	list = { -- порядок и подписи карточек (для каждого ключа есть сборщик в Decor.builders)
 		{ key = "door", name = "Дверь", tag = "Дом", turn = 90 },
 		{ key = "wall", name = "Стена", tag = "Дом", turn = 90 },
+		{ key = "kotost", name = "Котость", tag = "Питомец" },
+		{ key = "water", name = "Вода", tag = "Разное" },
 		{ key = "pumpkin", name = "Тыква", tag = "Halloween" },
 		{ key = "hay", name = "Сено", tag = "Halloween" },
 		{ key = "tombstone", name = "Надгробие", tag = "Halloween" },
-		{ key = "ghost", name = "Привидение", tag = "Halloween" },
-		{ key = "skull", name = "Череп", tag = "Halloween" },
 		{ key = "cauldron", name = "Котёл", tag = "Halloween" },
 		{ key = "tree", name = "Ёлка", tag = "Новый год" },
 		{ key = "gift", name = "Подарок", tag = "Новый год" },
 		{ key = "snowman", name = "Снеговик", tag = "Новый год" },
-		{ key = "candycane", name = "Леденец", tag = "Новый год" },
 		{ key = "bush", name = "Куст", tag = "Природа" },
 		{ key = "mushroom", name = "Гриб", tag = "Природа" },
 		{ key = "rock", name = "Камень", tag = "Природа" },
@@ -977,46 +976,6 @@ do
 		ball(m, "Mound", Vector3.new(2.2, 0.6, 1.5), CFrame.new(0, 0.1, -1.2), Color3.fromRGB(82, 60, 40), Enum.Material.Ground, false)
 	end
 
-	-- 🎃 Привидение: полупрозрачное, с поднятыми «руками» и бледным светом
-	B.ghost = function(m)
-		local white, dark = Color3.fromRGB(244, 248, 255), Color3.fromRGB(28, 30, 40)
-		pillar(m, "Body", 1.7, 1.9, CFrame.new(0, 1.1, 0), white, PLASTIC, true)
-		local head = ball(m, "Head", Vector3.new(1.9, 1.9, 1.9), CFrame.new(0, 2.1, 0), white, PLASTIC, false)
-		for k = 0, 5 do -- «рваный» подол
-			local a = math.rad(k * 60)
-			ball(m, "Hem", Vector3.new(0.75, 0.75, 0.75), CFrame.new(math.cos(a) * 0.78, 0.32, math.sin(a) * 0.78), white, PLASTIC, false)
-		end
-		for _, sx in ipairs({ -1, 1 }) do
-			ball(m, "Arm", Vector3.new(0.55, 1.1, 0.5), CFrame.new(sx * 1.1, 1.5, -0.1) * CFrame.Angles(0, 0, math.rad(sx * -25)),
-				white, PLASTIC, false)
-			ball(m, "Eye", Vector3.new(0.3, 0.5, 0.2), CFrame.new(sx * 0.38, 2.25, -0.84), dark, PLASTIC, false)
-		end
-		ball(m, "Mouth", Vector3.new(0.45, 0.55, 0.2), CFrame.new(0, 1.7, -0.84), dark, PLASTIC, false)
-		make("PointLight", { Color = Color3.fromRGB(170, 205, 255), Range = 9, Brightness = 0.7 }, head)
-		for _, d in ipairs(m:GetChildren()) do
-			if d:IsA("BasePart") and d.Color == white then
-				d.Transparency = 0.1
-			end
-		end
-	end
-
-	-- 🎃 Череп: черепушка с челюстью, глазницами, носом и зубами
-	B.skull = function(m)
-		local bone, dark = Color3.fromRGB(236, 230, 212), Color3.fromRGB(24, 22, 26)
-		ball(m, "Cranium", Vector3.new(2.0, 1.75, 1.95), CFrame.new(0, 1.5, 0), bone, PLASTIC, true)
-		ball(m, "Jaw", Vector3.new(1.4, 0.8, 1.25), CFrame.new(0, 0.5, -0.12), bone, PLASTIC, true)
-		for _, sx in ipairs({ -1, 1 }) do
-			ball(m, "Socket", Vector3.new(0.56, 0.66, 0.4), CFrame.new(sx * 0.46, 1.5, -0.8), dark, PLASTIC, false)
-		end
-		ball(m, "Nose", Vector3.new(0.28, 0.42, 0.26), CFrame.new(0, 1.1, -0.9), dark, PLASTIC, false)
-		for i = 0, 3 do
-			newPart(m, "Tooth", Vector3.new(0.24, 0.34, 0.16), CFrame.new(-0.4 + i * 0.27, 0.78, -0.66), bone, PLASTIC, false)
-		end
-		for i = 0, 2 do -- тёмные щели между зубами
-			newPart(m, "Gap", Vector3.new(0.03, 0.34, 0.17), CFrame.new(-0.265 + i * 0.27, 0.78, -0.66), dark, PLASTIC, false)
-		end
-	end
-
 	-- 🎃 Котёл: чёрный горшок с кипящим зелёным зельем (светится)
 	B.cauldron = function(m)
 		local iron, green = Color3.fromRGB(40, 42, 48), Color3.fromRGB(120, 255, 90)
@@ -1056,19 +1015,6 @@ do
 		pillar(m, "Scarf", 0.3, 1.2, CFrame.new(0, 3.0, 0), red, FABRIC, false)
 		newPart(m, "ScarfEnd", Vector3.new(0.3, 0.8, 0.1), CFrame.new(0.4, 2.6, -0.7) * CFrame.Angles(0, 0, math.rad(-8)),
 			red, FABRIC, false)
-	end
-
-	-- 🎄 Леденец: красно-белая палочка с изогнутой ручкой
-	B.candycane = function(m)
-		local red, white = Color3.fromRGB(220, 38, 50), Color3.fromRGB(250, 250, 252)
-		for k = 0, 5 do
-			pillar(m, "Stripe", 0.46, 0.5, CFrame.new(0, 0.23 + k * 0.45, 0), (k % 2 == 0) and red or white, PLASTIC, k == 0)
-		end
-		for t = 0, 5 do -- загнутая ручка: полукруг из шариков
-			local a = math.rad(180 - t * 36)
-			ball(m, "Hook", Vector3.new(0.52, 0.52, 0.52), CFrame.new(0.65 + math.cos(a) * 0.65, 2.7 + math.sin(a) * 0.65, 0),
-				(t % 2 == 0) and red or white, PLASTIC, false)
-		end
 	end
 
 	-- 🌿 Куст: несколько зелёных «облачков» и красные ягоды
@@ -1253,6 +1199,86 @@ do
 		newPart(m, "Wall", Vector3.new(8, 9, 0.6), CFrame.new(0, 4.5, 0), wall, PLASTIC, true)
 		newPart(m, "Skirting", Vector3.new(8.06, 0.8, 0.7), CFrame.new(0, 0.4, 0), trim, WOOD, false)
 		newPart(m, "Cornice", Vector3.new(8.06, 0.5, 0.8), CFrame.new(0, 8.75, 0), trim, WOOD, false)
+	end
+
+	-- 🐈 Котость: огромный круглый трёхцветный кот (как на картинке): белое пузо, рыжие и чёрные пятна, чёрная «маска»
+	-- с белой полоской на голове, большие круглые глаза (смотрит вверх), прижатые ушки, крошечные лапки
+	B.kotost = function(m)
+		local white, orange, black = Color3.fromRGB(248, 244, 238), Color3.fromRGB(222, 124, 44), Color3.fromRGB(28, 28, 32)
+		-- туловище, пятна, хвост, лапки
+		ball(m, "Body", Vector3.new(4.2, 3.7, 3.9), CFrame.new(0, 1.85, 0.2), white, FABRIC, true)
+		ball(m, "PatchR", Vector3.new(0.75, 2.3, 2.1), CFrame.new(1.78, 2.1, 0.3), orange, FABRIC, false)
+		ball(m, "PatchR2", Vector3.new(0.75, 1.5, 1.4), CFrame.new(1.65, 3.0, -0.9), orange, FABRIC, false)
+		ball(m, "PatchL", Vector3.new(0.75, 1.7, 1.6), CFrame.new(-1.78, 2.6, 0.5), orange, FABRIC, false)
+		ball(m, "PatchBlack", Vector3.new(0.75, 1.4, 1.6), CFrame.new(-1.8, 1.0, 0.0), black, FABRIC, false)
+		ball(m, "PatchBack", Vector3.new(2.0, 1.1, 1.6), CFrame.new(0.3, 3.45, 1.2), orange, FABRIC, false)
+		ball(m, "Tail", Vector3.new(0.9, 0.9, 1.5), CFrame.new(1.0, 0.9, 2.4), orange, FABRIC, false)
+		-- голова: белая, сверху и вокруг глаз чёрная «маска», между глаз белая полоска
+		ball(m, "Head", Vector3.new(3.3, 2.5, 2.7), CFrame.new(0, 3.25, -0.75), white, FABRIC, false)
+		ball(m, "Mask", Vector3.new(3.36, 1.55, 2.74), CFrame.new(0, 3.85, -0.75), black, FABRIC, false)
+		ball(m, "Blaze", Vector3.new(0.55, 1.4, 0.4), CFrame.new(0, 3.6, -2.0), white, FABRIC, false)
+		ball(m, "Nose", Vector3.new(0.3, 0.22, 0.22), CFrame.new(0, 2.9, -1.98), Color3.fromRGB(240, 150, 170), PLASTIC, false)
+		for _, sx in ipairs({ -1, 1 }) do
+			ball(m, "Paw", Vector3.new(1.0, 0.55, 1.3), CFrame.new(sx * 0.95, 0.28, -1.75), white, FABRIC, false)
+			ball(m, "Cheek", Vector3.new(1.1, 1.3, 1.1), CFrame.new(sx * 1.35, 2.7, -1.0), white, FABRIC, false)
+			ball(m, "Muzzle", Vector3.new(0.95, 0.75, 0.8), CFrame.new(sx * 0.42, 2.7, -1.65), white, FABRIC, false)
+			-- большие круглые глаза: белок, радужка, зрачок (смещён вверх — кот смотрит вверх) и блик
+			ball(m, "EyeWhite", Vector3.new(0.8, 0.8, 0.3), CFrame.new(sx * 0.7, 3.75, -1.78), Color3.fromRGB(252, 252, 252), PLASTIC, false)
+			ball(m, "Iris", Vector3.new(0.62, 0.62, 0.2), CFrame.new(sx * 0.7, 3.82, -1.9), Color3.fromRGB(62, 42, 32), PLASTIC, false)
+			ball(m, "Pupil", Vector3.new(0.34, 0.4, 0.2), CFrame.new(sx * 0.7, 3.88, -1.97), black, PLASTIC, false)
+			ball(m, "Shine", Vector3.new(0.13, 0.13, 0.1), CFrame.new(sx * 0.6, 4.0, -2.04), white, PLASTIC, false)
+			-- ушки прижаты к голове (чёрные)
+			ball(m, "Ear", Vector3.new(0.95, 0.7, 0.6), CFrame.new(sx * 1.25, 4.5, -0.95) * CFrame.Angles(math.rad(-15), 0, math.rad(sx * -28)),
+				black, FABRIC, false)
+			for _, dy in ipairs({ -0.08, 0.1 }) do
+				newPart(m, "Whisker", Vector3.new(0.9, 0.03, 0.03),
+					CFrame.new(sx * 1.3, 2.75 + dy, -1.6) * CFrame.Angles(0, math.rad(sx * 18), math.rad(sx * dy * 150)),
+					Color3.fromRGB(60, 60, 66), PLASTIC, false)
+			end
+		end
+	end
+
+	-- 💧 Вода: стеклянная бутылка с водой внутри; на этикетке голубая надпись «вода» с чёрной обводкой, ниже «мировая»
+	B.water = function(m)
+		local GLASS = Enum.Material.Glass
+		local glass, water = Color3.fromRGB(205, 232, 245), Color3.fromRGB(80, 180, 255)
+		local function soft(part, t) -- прозрачность детали
+			part.Transparency = t
+			return part
+		end
+		-- стекло: корпус, плечики и горлышко
+		soft(pillar(m, "Bottle", 3.2, 1.9, CFrame.new(0, 1.6, 0), glass, GLASS, true), 0.5)
+		soft(ball(m, "Shoulder", Vector3.new(1.9, 1.3, 1.9), CFrame.new(0, 3.2, 0), glass, GLASS, false), 0.5)
+		soft(pillar(m, "Neck", 0.9, 0.85, CFrame.new(0, 4.1, 0), glass, GLASS, false), 0.5)
+		-- вода внутри
+		soft(pillar(m, "Water", 2.9, 1.72, CFrame.new(0, 1.55, 0), water, GLASS, false), 0.25)
+		soft(ball(m, "WaterTop", Vector3.new(1.72, 0.9, 1.72), CFrame.new(0, 3.0, 0), water, GLASS, false), 0.25)
+		for _, b in ipairs({ { -0.3, 2.2, 0.2 }, { 0.35, 2.6, -0.25 }, { 0.1, 2.9, 0.3 } }) do
+			soft(ball(m, "Bubble", Vector3.new(0.16, 0.16, 0.16), CFrame.new(b[1], b[2], b[3]), WHITE, PLASTIC, false), 0.35)
+		end
+		-- крышка и блик на стекле
+		pillar(m, "CapRing", 0.12, 1.1, CFrame.new(0, 4.5, 0), Color3.fromRGB(40, 110, 190), PLASTIC, false)
+		pillar(m, "Cap", 0.5, 1.05, CFrame.new(0, 4.8, 0), Color3.fromRGB(50, 140, 230), PLASTIC, false)
+		soft(newPart(m, "Glint", Vector3.new(0.1, 2.2, 0.05), CFrame.new(-0.55, 1.8, -0.77) * CFrame.Angles(0, math.rad(35), 0),
+			WHITE, PLASTIC, false), 0.55)
+		-- этикетка: белая лента вокруг бутылки + надпись спереди и сзади
+		soft(pillar(m, "Label", 1.35, 1.99, CFrame.new(0, 1.55, 0), Color3.fromRGB(236, 246, 255), PLASTIC, false), 0.05)
+		for _, side in ipairs({ { -1.025, Enum.NormalId.Front }, { 1.025, Enum.NormalId.Back } }) do
+			local plate = newPart(m, "LabelPlate", Vector3.new(1.7, 1.2, 0.04), CFrame.new(0, 1.55, side[1]), WHITE, PLASTIC, false)
+			plate.Transparency = 1 -- сама деталь невидима, видна только надпись на ней
+			local sg = make("SurfaceGui", {
+				Face = side[2], SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud, PixelsPerStud = 100,
+			}, plate)
+			local function line(text, y, h, size, color, thick)
+				local t = make("TextLabel", {
+					BackgroundTransparency = 1, Position = UDim2.fromOffset(0, y), Size = UDim2.new(1, 0, 0, h),
+					Font = Enum.Font.GothamBlack, TextSize = size, TextColor3 = color, Text = text,
+				}, sg)
+				make("UIStroke", { Color = Color3.new(0, 0, 0), Thickness = thick }, t) -- чёрная обводка букв
+			end
+			line("вода", 8, 66, 60, Color3.fromRGB(120, 205, 255), 3)
+			line("мировая", 78, 36, 28, Color3.fromRGB(235, 245, 255), 2)
+		end
 	end
 
 	-- собрать украшение по ключу
@@ -4356,6 +4382,7 @@ end
 -- Отправить (жители пойдут по маршруту) и Очистить.
 Home.npcBtn = dockButton(dock, "", "НПС", 3, 66)
 Decor.icon(Home.npcBtn, Home.NPC_IMAGE)
+Home.npcBtn.BackgroundTransparency = 1 -- фон кнопки полностью прозрачный: видна только картинка
 Home.npcBtn.Visible = false
 function Home.refreshNpcBtn()
 	Home.npcBtn.Visible = next(Home.doors) ~= nil and not buildMode -- есть хотя бы одна дверь (в режиме строительства кнопка прячется)
