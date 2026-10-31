@@ -93,7 +93,7 @@ local Decor = {
 		{ key = "door", name = "Дверь", tag = "Дом", turn = 90 },
 		{ key = "wall", name = "Стена", tag = "Дом", turn = 90 },
 		{ key = "kotost", name = "Котость", tag = "Питомец" },
-		{ key = "water", name = "Вода", tag = "Разное" },
+		{ key = "water", name = "Чекушка", tag = "Меллстройность" },
 		{ key = "pumpkin", name = "Тыква", tag = "Halloween" },
 		{ key = "hay", name = "Сено", tag = "Halloween" },
 		{ key = "tombstone", name = "Надгробие", tag = "Halloween" },
@@ -1323,7 +1323,7 @@ do
 				}, sg)
 				make("UIStroke", { Color = Color3.new(0, 0, 0), Thickness = thick }, t) -- чёрная обводка букв
 			end
-			line("вода", 8, 66, 60, Color3.fromRGB(120, 205, 255), 3)
+			line("Чекушка", 8, 66, 60, Color3.fromRGB(120, 205, 255), 3)
 			line("мировая", 78, 36, 28, Color3.fromRGB(235, 245, 255), 2)
 		end
 	end
