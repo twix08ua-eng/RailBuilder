@@ -34,9 +34,9 @@
 --
 -- «РЫБИЙ ГЛАЗ» — когда едешь в вагонетке очень быстро, угол обзора камеры раскрывается шире (настройки в таблице FX).
 --
--- ЭКРАН ЗАГРУЗКИ — при входе 5 секунд (настройки в таблице LOAD), брутальный стиль: карбон из полос, жёлто-чёрные ленты,
--- рамка с картинкой прилетает в центр и пульсирует под музыку, плашка с названием и сегментная полоса с процентами.
--- Карточка игрока оформлена в том же стиле.
+-- ЭКРАН ЗАГРУЗКИ — при входе 5 секунд (настройки в таблице LOAD): картинка прилетает в центр,
+-- внизу появляется название, картинка пульсирует под музыку. По рамкам (картинка, полоса, карточка игрока)
+-- бегут тонкие светящиеся линии — это UIStroke с вращающимся UIGradient.
 --
 -- СВОБОДНЫЙ РЕЖИМ — переключатель как на iPhone (слева сверху в режиме строительства, или клавиша F).
 -- Когда он включён, правил нет: рельсы ставятся где угодно и под любым углом, без сетки,
@@ -406,191 +406,88 @@ local function setSignText(model, text)
 	end
 end
 
--- ===== Экран загрузки (брутальный стиль) =====
--- Тёмный «карбон» из диагональных полос, жёлто-чёрные предупреждающие ленты сверху и снизу (они ползут), угловые скобки,
--- квадратная рамка с картинкой (бьётся под музыку), жёлтая плашка с названием и сегментная полоса загрузки с процентами.
--- Картинка пульсирует под музыку по громкости (PlaybackLoudness); пока музыка не заиграла, пульсирует по таймеру.
+-- ===== Фейковый экран загрузки =====
+-- Картинка плавно прилетает в центр, ниже появляется название, а сама картинка пульсирует под музыку.
+-- Громкость музыки читаем через PlaybackLoudness; пока музыка не заиграла (или не загрузилась),
+-- картинка пульсирует по таймеру, чтобы экран не выглядел мёртвым.
 local Loading = { done = false, uiReady = false }
 do
 	local vp = camera.ViewportSize
-	local W, H = math.max(vp.X, 640), math.max(vp.Y, 360)
+	local imgSize = math.clamp(math.min(vp.X, vp.Y) * 0.36, 120, 260)
+	local half = imgSize / 2
+	local titleY = half + imgSize * 0.12 + 30 -- где (по вертикали от центра экрана) стоит название
 	local T = math.max(LOAD.TIME, 2)
-	local FADE = 0.5 -- последние полсекунды экран плавно гаснет
-	local YEL = Color3.fromRGB(255, 196, 0)
-	local INK = Color3.fromRGB(10, 10, 12)
-	local STEEL = Color3.fromRGB(150, 154, 164)
-	local MONO = Enum.Font.RobotoMono
-	local BARH = 26 -- высота предупреждающих лент
-	local SEG = 30 -- сколько сегментов в полосе загрузки
-	local imgSize = math.clamp(math.min(W, H) * 0.28, 100, 210)
-	local plateSize = imgSize + 36
-	local titleH = math.clamp(H * 0.07, 30, 44)
-	local barW = math.clamp(W * 0.42, 240, 460)
-
-	-- вертикальная раскладка по центру: рамка → плашка с названием → полоса загрузки → статус
-	local gap1, gap2, gap3, barBoxH = 22, 18, 12, 26
-	local stack = plateSize + gap1 + titleH + gap2 + barBoxH + gap3 + 16
-	local y0 = -stack / 2
-	local plateY = y0 + plateSize / 2 - 6
-	local titleY = y0 + plateSize + gap1 + titleH / 2 - 6
-	local barY = y0 + plateSize + gap1 + titleH + gap2 + barBoxH / 2 - 6
-	local statusY = barY + barBoxH / 2 + gap3 + 8
+	local FADE = 0.5                          -- последние полсекунды экран плавно гаснет
 
 	local lgui = make("ScreenGui", {
 		Name = "RailLoadingUI", ResetOnSpawn = false, IgnoreGuiInset = true,
 		DisplayOrder = 1000, ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 	}, player:WaitForChild("PlayerGui"))
 
-	-- CanvasGroup — чтобы гасить весь экран целиком одним твином и аккуратно обрезать полосы по краям
+	-- CanvasGroup — чтобы гасить весь экран целиком одним твином
 	local screen = make("CanvasGroup", {
-		Size = UDim2.fromScale(1, 1), BackgroundColor3 = INK, BorderSizePixel = 0,
+		Size = UDim2.fromScale(1, 1), BackgroundColor3 = C.bg, BorderSizePixel = 0,
 		Active = true, GroupTransparency = 0, -- Active — чтобы клики не проходили сквозь экран загрузки
 	}, lgui)
 
-	-- «карбон»: два слоя тонких диагональных полос под углами 45° и -45°
-	local diag = math.ceil(math.sqrt(W * W + H * H)) + 60
-	local function weave(rotation, w, colorA, transA, colorB, transB)
-		local layer = make("Frame", {
-			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
-			Size = UDim2.fromOffset(diag, diag), BackgroundTransparency = 1, Rotation = rotation,
-		}, screen)
-		for i = 0, math.ceil(diag / w) do
-			local even = i % 2 == 0
-			make("Frame", {
-				Position = UDim2.fromOffset(i * w, 0), Size = UDim2.fromOffset(w, diag), BorderSizePixel = 0,
-				BackgroundColor3 = even and colorA or colorB, BackgroundTransparency = even and transA or transB,
-			}, layer)
-		end
-	end
-	weave(45, 12, Color3.fromRGB(21, 21, 25), 0, Color3.fromRGB(13, 13, 15), 0)
-	weave(-45, 12, Color3.new(0, 0, 0), 0.8, Color3.new(0, 0, 0), 1)
-
-	-- затемнение сверху и снизу — для глубины
-	local function shade(top)
-		local f = make("Frame", {
-			AnchorPoint = Vector2.new(0, top and 0 or 1), Position = UDim2.fromScale(0, top and 0 or 1),
-			Size = UDim2.new(1, 0, 0.32, 0), BackgroundColor3 = INK, BorderSizePixel = 0,
-		}, screen)
-		make("UIGradient", {
-			Rotation = top and 90 or -90,
-			Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.05), NumberSequenceKeypoint.new(1, 1) }),
-		}, f)
-	end
-	shade(true)
-	shade(false)
-
-	-- жёлто-чёрные предупреждающие ленты (полосы ползут)
-	local strips = {}
-	local function hazard(top)
-		local bar = make("Frame", {
-			AnchorPoint = Vector2.new(0, top and 0 or 1),
-			Position = top and UDim2.new(0, 0, 0, -BARH) or UDim2.new(0, 0, 1, BARH),
-			Size = UDim2.new(1, 0, 0, BARH), BackgroundColor3 = INK, BorderSizePixel = 0, ClipsDescendants = true,
-		}, screen)
-		local strip = make("Frame", {
-			Position = UDim2.fromOffset(-72, 0), Size = UDim2.new(1, 200, 1, 0), BackgroundTransparency = 1,
-		}, bar)
-		for i = 0, math.ceil((W + 200) / 36) do
-			make("Frame", {
-				Position = UDim2.fromOffset(i * 36, -20), Size = UDim2.fromOffset(14, BARH + 40),
-				BackgroundColor3 = YEL, BorderSizePixel = 0, Rotation = 35,
-			}, strip)
-		end
-		strips[#strips + 1] = strip
-		tween(bar, 0.6, { Position = top and UDim2.new(0, 0, 0, 0) or UDim2.new(0, 0, 1, 0) }, Enum.EasingStyle.Quint)
-		return bar
-	end
-	hazard(true)
-	hazard(false)
-
-	-- угловые скобки
-	local function bracket(ax, ay)
-		local f = make("Frame", {
-			AnchorPoint = Vector2.new(ax, ay),
-			Position = UDim2.new(ax, ax == 0 and 24 or -24, ay, ay == 0 and (BARH + 18) or -(BARH + 18)),
-			Size = UDim2.fromOffset(46, 46), BackgroundTransparency = 1,
-		}, screen)
-		make("Frame", {
-			AnchorPoint = Vector2.new(ax, ay), Position = UDim2.fromScale(ax, ay),
-			Size = UDim2.fromOffset(46, 4), BackgroundColor3 = YEL, BorderSizePixel = 0,
-		}, f)
-		make("Frame", {
-			AnchorPoint = Vector2.new(ax, ay), Position = UDim2.fromScale(ax, ay),
-			Size = UDim2.fromOffset(4, 46), BackgroundColor3 = YEL, BorderSizePixel = 0,
-		}, f)
-	end
-	bracket(0, 0)
-	bracket(1, 0)
-	bracket(0, 1)
-	bracket(1, 1)
-
-	-- квадратная рамка с картинкой: влетает сверху, бьётся под музыку
-	local plate = make("Frame", {
-		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, -0.4),
-		Size = UDim2.fromOffset(plateSize, plateSize), BackgroundColor3 = Color3.fromRGB(16, 16, 19),
-		BorderSizePixel = 0, Rotation = -14,
-	}, screen)
-	local plateStroke = make("UIStroke", {
-		Color = YEL, Thickness = 4, ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
-	}, plate)
 	local img = make("ImageLabel", {
-		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
-		Size = UDim2.fromOffset(imgSize, imgSize), BackgroundTransparency = 1,
-		Image = LOAD.IMAGE, ImageTransparency = 1, ScaleType = Enum.ScaleType.Fit,
-	}, plate)
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, -0.4), -- стартует за верхним краем экрана
+		Size = UDim2.fromOffset(imgSize, imgSize),
+		BackgroundTransparency = 1, Image = LOAD.IMAGE, ImageTransparency = 1,
+		ScaleType = Enum.ScaleType.Fit, Rotation = -18,
+	}, screen)
 	local pulse = make("UIScale", {}, img)
 
-	-- жёлтая плашка с названием (чёрные буквы)
-	local titleBox = make("Frame", {
-		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, -90, 0.5, titleY),
-		Size = UDim2.fromOffset(0, titleH), AutomaticSize = Enum.AutomaticSize.X,
-		BackgroundColor3 = YEL, BorderSizePixel = 0, Visible = false,
-	}, screen)
-	make("UIPadding", { PaddingLeft = UDim.new(0, 22), PaddingRight = UDim.new(0, 22) }, titleBox)
-	make("TextLabel", {
-		Size = UDim2.fromOffset(0, titleH), AutomaticSize = Enum.AutomaticSize.X, BackgroundTransparency = 1,
-		Font = Enum.Font.GothamBlack, TextSize = math.floor(titleH * 0.64), TextColor3 = INK, Text = LOAD.TITLE,
-	}, titleBox)
+	-- рамка вокруг картинки: тонкая линия, по ней бежит светящийся отрезок (UIStroke с вращающимся UIGradient)
+	local ringBox = make("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.new(1, 28, 1, 28), BackgroundTransparency = 1,
+	}, img)
+	make("UICorner", { CornerRadius = UDim.new(0, 30) }, ringBox)
+	local ringBase = make("UIStroke", {
+		Color = WHITE, Thickness = 1.5, Transparency = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+	}, ringBox)
+	local ringHL = make("UIStroke", {
+		Color = WHITE, Thickness = 3, Transparency = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+	}, ringBox)
+	local ringGrad = make("UIGradient", {
+		Color = ColorSequence.new(C.accent, Color3.fromRGB(220, 245, 255)),
+		Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.35, 1), NumberSequenceKeypoint.new(0.5, 0),
+			NumberSequenceKeypoint.new(0.65, 1), NumberSequenceKeypoint.new(1, 1),
+		}),
+	}, ringHL)
 
-	-- полоса загрузки из сегментов с рамкой и процентами
-	local barBox = make("Frame", {
-		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 90, 0.5, barY),
-		Size = UDim2.fromOffset(barW, barBoxH), BackgroundColor3 = INK, BorderSizePixel = 0, Visible = false,
+	local title = make("TextLabel", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0.5, 0, 0.5, titleY + 22),
+		Size = UDim2.fromOffset(420, 44),
+		BackgroundTransparency = 1, Font = Enum.Font.GothamBold, TextSize = 34,
+		TextColor3 = C.text, TextTransparency = 1, Text = LOAD.TITLE,
 	}, screen)
-	make("UIStroke", { Color = YEL, Thickness = 3, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, barBox)
-	local segs = {}
-	local segW = (barW - 12) / SEG
-	for i = 1, SEG do
-		segs[i] = make("Frame", {
-			Position = UDim2.fromOffset(6 + (i - 1) * segW, 6), Size = UDim2.fromOffset(math.max(2, segW - 2), barBoxH - 12),
-			BackgroundColor3 = Color3.fromRGB(38, 38, 43), BorderSizePixel = 0,
-		}, barBox)
-	end
-	local percent = make("TextLabel", {
-		AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(1, 12, 0.5, 0), Size = UDim2.fromOffset(70, barBoxH),
-		BackgroundTransparency = 1, Font = MONO, TextSize = 20, TextColor3 = Color3.new(1, 1, 1),
-		TextXAlignment = Enum.TextXAlignment.Left, Text = "000%",
-	}, barBox)
 
-	-- строка статуса и подсказка внизу
-	local STATUS = {
-		{ 0, "ИНИЦИАЛИЗАЦИЯ" }, { 0.2, "ЗАГРУЗКА РЕЛЬС" }, { 0.45, "СБОРКА ЖИТЕЛЕЙ" },
-		{ 0.7, "ПРОВЕРКА ДАННЫХ" }, { 0.92, "ГОТОВО" },
-	}
-	local status = make("TextLabel", {
-		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, statusY), Size = UDim2.fromOffset(barW, 18),
-		BackgroundTransparency = 1, Font = MONO, TextSize = 13, TextColor3 = STEEL,
-		TextXAlignment = Enum.TextXAlignment.Left, Text = "", Visible = false,
+	local track = make("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0.5, 0, 0.5, titleY + 44),
+		Size = UDim2.fromOffset(220, 6),
+		BackgroundColor3 = C.card, BackgroundTransparency = 1, BorderSizePixel = 0,
 	}, screen)
-	local TIPS = {
-		"B — РЕЖИМ СТРОИТЕЛЬСТВА", "R — ПОВЕРНУТЬ", "F — СВОБОДНЫЙ РЕЖИМ",
-		"ДВЕРЬ ОТКРЫВАЕТСЯ КНОПКОЙ E", "ЖИТЕЛИ ПОЯВЛЯЮТСЯ У ДВЕРИ",
-	}
-	make("TextLabel", {
-		AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -(BARH + 16)), Size = UDim2.fromOffset(barW + 80, 18),
-		BackgroundTransparency = 1, Font = MONO, TextSize = 12, TextColor3 = STEEL,
-		Text = "СОВЕТ // " .. TIPS[math.random(1, #TIPS)],
-	}, screen)
+	make("UICorner", { CornerRadius = UDim.new(0, 3) }, track)
+	local fill = make("Frame", {
+		Size = UDim2.fromScale(0, 1), BackgroundColor3 = C.accent, BorderSizePixel = 0,
+	}, track)
+	make("UICorner", { CornerRadius = UDim.new(0, 3) }, fill)
+	-- тонкая рамка у полосы и блик, который бегает по заполненной части
+	local trackStroke = make("UIStroke", {
+		Color = WHITE, Thickness = 1, Transparency = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+	}, track)
+	local fillGrad = make("UIGradient", {
+		Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, C.accent), ColorSequenceKeypoint.new(0.5, Color3.fromRGB(215, 245, 255)),
+			ColorSequenceKeypoint.new(1, C.accent),
+		}),
+	}, fill)
 
 	local sound = make("Sound", {
 		Name = "LoadingMusic", SoundId = LOAD.SOUND, Volume = LOAD.VOLUME, Looped = true,
@@ -604,11 +501,10 @@ do
 	end)
 	sound:Play()
 
-	local t0 = os.clock()
-	local smooth, heard, lit = 0, false, 0
+	-- пульс: удар по громкости — быстро вверх, затем плавно вниз
+	local smooth = 0
+	local heard = false
 	local pulseConn = RunService.RenderStepped:Connect(function(dt)
-		local now = os.clock() - t0
-		-- пульс: удар по громкости — быстро вверх, затем плавно вниз
 		local loud = sound.PlaybackLoudness
 		if loud > 2 then
 			heard = true
@@ -617,52 +513,38 @@ do
 		if heard then
 			target = math.clamp(loud / 400, 0, 1)
 		else
-			target = (math.sin(now * 7) * 0.5 + 0.5) * 0.45
+			target = (math.sin(os.clock() * 7) * 0.5 + 0.5) * 0.45
 		end
 		local k = (target > smooth) and 25 or 7
 		smooth += (target - smooth) * math.min(1, dt * k)
 		pulse.Scale = 1 + smooth * LOAD.PULSE
-		plateStroke.Thickness = 4 + smooth * 4
-
-		-- предупреждающие ленты ползут вправо
-		local shift = (now * 60) % 36
-		for _, strip in ipairs(strips) do
-			strip.Position = UDim2.fromOffset(-72 + shift, 0)
-		end
-
-		-- прогресс: сегменты зажигаются по одному (новый вспыхивает белым)
-		local p = math.clamp((now - 0.9) / (T - 0.9 - FADE), 0, 1)
-		p = p * p * (3 - 2 * p)
-		local n = math.floor(p * SEG + 0.0001)
-		if n > lit then
-			for i = lit + 1, n do
-				segs[i].BackgroundColor3 = Color3.new(1, 1, 1)
-				tween(segs[i], 0.3, { BackgroundColor3 = YEL })
-			end
-			lit = n
-		end
-		percent.Text = string.format("%03d%%", math.floor(p * 100 + 0.5))
-		local idx = 1
-		for j = #STATUS, 1, -1 do
-			if p >= STATUS[j][1] then
-				idx = j
-				break
-			end
-		end
-		status.Text = "> " .. STATUS[idx][2] .. ((math.floor(now * 2.5) % 2 == 0) and "_" or " ")
+		local now = os.clock()
+		ringGrad.Rotation = (now * 140) % 360 -- светящийся отрезок бежит по рамке
+		fillGrad.Offset = Vector2.new(((now * 0.9) % 2) - 1, 0) -- блик бежит по полосе
 	end)
 
-	-- 0.0 с: рамка с картинкой влетает в центр
-	tween(plate, 1.3, { Position = UDim2.new(0.5, 0, 0.5, plateY), Rotation = 0 }, Enum.EasingStyle.Quint)
+	-- 0.0 с: картинка прилетает в центр
+	tween(img, 1.3, { Position = UDim2.fromScale(0.5, 0.5), Rotation = 0 }, Enum.EasingStyle.Quint)
 	tween(img, 0.6, { ImageTransparency = 0 })
+	tween(ringBase, 0.6, { Transparency = 0.8 })
+	tween(ringHL, 0.6, { Transparency = 0 })
 
-	-- 0.9 с: выезжают плашка с названием, полоса загрузки и статус
+	-- 0.9 с: появляются название и полоска загрузки
 	task.delay(0.9, function()
-		titleBox.Visible = true
-		barBox.Visible = true
-		status.Visible = true
-		tween(titleBox, 0.6, { Position = UDim2.new(0.5, 0, 0.5, titleY) }, Enum.EasingStyle.Quint)
-		tween(barBox, 0.6, { Position = UDim2.new(0.5, 0, 0.5, barY) }, Enum.EasingStyle.Quint)
+		tween(title, 0.7, { TextTransparency = 0, Position = UDim2.new(0.5, 0, 0.5, titleY) }, Enum.EasingStyle.Quint)
+		tween(track, 0.5, { BackgroundTransparency = 0 })
+		tween(fill, math.max(0.1, T - 0.9 - FADE), { Size = UDim2.fromScale(1, 1) }, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+		tween(trackStroke, 0.5, { Transparency = 0.75 })
+		-- тонкие линии по бокам названия (растут от текста в стороны и затухают)
+		local hw = title.TextBounds.X / 2 + 18
+		for _, side in ipairs({ -1, 1 }) do
+			local line = make("Frame", {
+				AnchorPoint = Vector2.new(side < 0 and 1 or 0, 0.5), Position = UDim2.new(0.5, side * hw, 0.5, titleY),
+				Size = UDim2.fromOffset(0, 2), BackgroundColor3 = C.accent, BorderSizePixel = 0,
+			}, screen)
+			make("UIGradient", { Rotation = (side < 0) and 180 or 0, Transparency = NumberSequence.new(0, 1) }, line)
+			tween(line, 0.7, { Size = UDim2.fromOffset(80, 2) }, Enum.EasingStyle.Quint)
+		end
 	end)
 
 	-- последние полсекунды: экран и музыка плавно гаснут
@@ -3742,90 +3624,82 @@ toast = function(text, color)
 	end)
 end
 
--- ===== Карточка игрока (брутальный стиль): после загрузки «падает» сверху (аватарка скина, ник и регион смайликом) =====
--- Тёмный «карбон», жёлтая рамка, предупреждающая лента сверху, квадратная аватарка, жёлтый ярлык «ИГРОК».
+-- ===== Карточка игрока: после загрузки «падает» сверху (аватарка скина, ник и регион смайликом) =====
 -- Потом появляются панели, а карточка остаётся перед ними (поверх), и чуть позже уезжает в угол.
 do
-	local YEL = Color3.fromRGB(255, 196, 0)
-	local INK = Color3.fromRGB(12, 12, 15)
-	local STEEL = Color3.fromRGB(150, 154, 164)
-	local PW, PH = 330, 126
-	Profile.W, Profile.H = PW, PH
-
-	-- CanvasGroup — чтобы содержимое аккуратно обрезалось по краям даже когда карточка наклонена
-	local card = make("CanvasGroup", {
+	local card = make("Frame", {
 		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0, -150),
-		Size = UDim2.fromOffset(PW, PH), BackgroundColor3 = INK, BorderSizePixel = 0,
+		Size = UDim2.fromOffset(300, 112), BackgroundColor3 = C.panel, BorderSizePixel = 0,
 		Visible = false, ZIndex = 30, Rotation = -6, -- ZIndex 30 — выше всех панелей
 	}, root)
-	make("UIStroke", { Color = YEL, Thickness = 3, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, card)
+	corner(card, 20)
+	-- рамка: тонкая линия, по ней бежит светящийся отрезок (UIStroke с вращающимся UIGradient)
+	stroke(card, WHITE, 1.5, 0.82)
+	local cardHL = stroke(card, WHITE, 2.5, 0)
+	local cardGrad = make("UIGradient", {
+		Color = ColorSequence.new(C.accent, Color3.fromRGB(220, 245, 255)),
+		Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.35, 1), NumberSequenceKeypoint.new(0.5, 0),
+			NumberSequenceKeypoint.new(0.65, 1), NumberSequenceKeypoint.new(1, 1),
+		}),
+	}, cardHL)
 	Profile.scale = make("UIScale", {}, card)
 
-	-- карбон: диагональные полосы
-	local diag = math.ceil(math.sqrt(PW * PW + PH * PH)) + 20
-	local weave = make("Frame", {
-		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
-		Size = UDim2.fromOffset(diag, diag), BackgroundTransparency = 1, Rotation = 45,
+	-- круглая аватарка (голова твоего скина)
+	local ring = make("Frame", {
+		Position = UDim2.fromOffset(14, 14), Size = UDim2.fromOffset(84, 84),
+		BackgroundColor3 = C.card, BorderSizePixel = 0,
 	}, card)
-	for i = 0, math.ceil(diag / 8) do
-		make("Frame", {
-			Position = UDim2.fromOffset(i * 8, 0), Size = UDim2.fromOffset(8, diag), BorderSizePixel = 0,
-			BackgroundColor3 = (i % 2 == 0) and Color3.fromRGB(22, 22, 26) or Color3.fromRGB(14, 14, 17),
-		}, weave)
-	end
-
-	-- предупреждающая лента вдоль верхнего края
-	local tape = make("Frame", {
-		Size = UDim2.new(1, 0, 0, 10), BackgroundColor3 = INK, BorderSizePixel = 0, ClipsDescendants = true,
-	}, card)
-	for i = 0, math.ceil(PW / 24) + 1 do
-		make("Frame", {
-			Position = UDim2.fromOffset(i * 24 - 6, -8), Size = UDim2.fromOffset(10, 28),
-			BackgroundColor3 = YEL, BorderSizePixel = 0, Rotation = 35,
-		}, tape)
-	end
-
-	-- квадратная аватарка (голова твоего скина) в жёлтой рамке
-	local frame = make("Frame", {
-		Position = UDim2.fromOffset(16, 24), Size = UDim2.fromOffset(88, 88),
-		BackgroundColor3 = Color3.fromRGB(26, 26, 30), BorderSizePixel = 0,
-	}, card)
-	make("UIStroke", { Color = YEL, Thickness = 3, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, frame)
+	corner(ring, 42)
+	local ringStroke = stroke(ring, WHITE, 3, 0)
+	local ringGrad = make("UIGradient", {
+		Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, C.accent), ColorSequenceKeypoint.new(0.5, Color3.fromRGB(220, 245, 255)),
+			ColorSequenceKeypoint.new(1, C.accent),
+		}),
+	}, ringStroke)
 	Profile.avatarImg = make("ImageLabel", {
 		Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Image = "", ScaleType = Enum.ScaleType.Crop,
-	}, frame)
+	}, ring)
+	corner(Profile.avatarImg, 42)
 
 	-- ник и логин
 	label(card, {
-		Position = UDim2.fromOffset(118, 20), Size = UDim2.new(1, -132, 0, 30), Font = Enum.Font.GothamBlack, TextSize = 22,
+		Position = UDim2.fromOffset(112, 14), Size = UDim2.fromOffset(174, 28), Font = Enum.Font.GothamBold, TextSize = 22,
 		TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = player.DisplayName,
 	})
 	label(card, {
-		Position = UDim2.fromOffset(118, 50), Size = UDim2.new(1, -132, 0, 16), Font = Enum.Font.RobotoMono, TextSize = 13,
-		TextColor3 = STEEL, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
-		Text = "@" .. player.Name,
+		Position = UDim2.fromOffset(112, 42), Size = UDim2.fromOffset(174, 18), TextSize = 13, TextColor3 = C.sub,
+		TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = "@" .. player.Name,
 	})
 
-	-- регион: флаг-смайлик в жёсткой рамке
-	local chip = make("Frame", {
-		Position = UDim2.fromOffset(118, 76), Size = UDim2.fromOffset(64, 34),
-		BackgroundColor3 = Color3.fromRGB(26, 26, 30), BorderSizePixel = 0,
+	-- тонкая линия под ником (затухает вправо)
+	local sep = make("Frame", {
+		Position = UDim2.fromOffset(112, 63), Size = UDim2.fromOffset(150, 2),
+		BackgroundColor3 = C.accent, BorderSizePixel = 0,
 	}, card)
-	make("UIStroke", { Color = YEL, Thickness = 2, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, chip)
+	make("UIGradient", { Transparency = NumberSequence.new(0, 1) }, sep)
+
+	-- регион: флаг-смайлик
+	local chip = make("Frame", {
+		Position = UDim2.fromOffset(112, 66), Size = UDim2.fromOffset(54, 32),
+		BackgroundColor3 = C.card, BorderSizePixel = 0,
+	}, card)
+	corner(chip, 16)
 	Profile.flagL = label(chip, { Size = UDim2.fromScale(1, 1), TextSize = 22, Text = "🌍" })
 	label(card, {
-		Position = UDim2.fromOffset(190, 76), Size = UDim2.fromOffset(70, 34), Font = Enum.Font.RobotoMono, TextSize = 12,
-		TextColor3 = STEEL, TextXAlignment = Enum.TextXAlignment.Left, Text = "РЕГИОН",
+		Position = UDim2.fromOffset(174, 66), Size = UDim2.fromOffset(110, 32), TextSize = 12, TextColor3 = C.sub,
+		TextXAlignment = Enum.TextXAlignment.Left, Text = "регион",
 	})
-
-	-- жёлтый ярлык «ИГРОК» в правом нижнем углу
-	local tag = make("Frame", {
-		AnchorPoint = Vector2.new(1, 1), Position = UDim2.fromScale(1, 1), Size = UDim2.fromOffset(70, 20),
-		BackgroundColor3 = YEL, BorderSizePixel = 0,
-	}, card)
-	label(tag, {
-		Size = UDim2.fromScale(1, 1), Font = Enum.Font.RobotoMono, TextSize = 12, TextColor3 = INK, Text = "ИГРОК",
-	})
+	-- линии на рамках медленно бегут по кругу, пока карточка видна
+	RunService.RenderStepped:Connect(function()
+		if card.Visible then
+			local r = (os.clock() * 120) % 360
+			cardGrad.Rotation = r
+			ringGrad.Rotation = -r
+		end
+	end)
+	Profile.W, Profile.H = 300, 112 -- размер карточки (нужен, чтобы она уехала в угол ровно)
 	Profile.card = card
 end
 
