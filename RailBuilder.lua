@@ -1,6 +1,5 @@
--- LocalScript — Котость.Rails (сохранение в локальный файл, без серверного скрипта)
+-- LocalScript — Котость.Rails (сохранение в локальный файл)
 -- Положи в: StarterPlayer > StarterPlayerScripts > RailBuilder
--- Сохранение идёт в KotostRails/save.json (папка исполнителя), RemoteFunction не нужен.
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -598,7 +597,6 @@ local function newCartModel()
 	make("PointLight", { Color = Color3.fromRGB(255, 200, 120), Range = 16, Brightness = 1.5 }, lamp)
 	return model
 end
-
 -- ===== Украшения =====
 do
 	local PLASTIC, FABRIC = Enum.Material.SmoothPlastic, Enum.Material.Fabric
@@ -1207,7 +1205,7 @@ function Home.stepDoors(now)
 		end
 	end
 end
-
+-- ===== Жители: помощники =====
 function Home.filter()
 	local f = { Home.folder, camera }
 	if player.Character then f[#f + 1] = player.Character end
@@ -1387,6 +1385,7 @@ function Home.walkTo(n, target, stopDist, timeout)
 	return r
 end
 
+-- ===== Поведение =====
 function Home.joy(n)
 	Home.say(n, "joy")
 	Home.play(n, "cheer")
@@ -1450,6 +1449,7 @@ end
 
 function Home.log(...) if Home.DEBUG then print("[Обучение]", ...) end end
 
+-- ===== Маршруты =====
 function Home.newRoutes()
 	local list = {}
 	for i = 1, Home.ROUTE_SLOTS do list[i] = { name = "Маршрут " .. i, pts = {} } end
@@ -1565,7 +1565,9 @@ function Home.recordStep(now)
 		if last then rec.length += (feet - last).Magnitude end
 		if #rec.pts >= Home.MAX_TRAIL then
 			toast("Маршрут достиг предельной длины — сохраняю", C.warn)
-			if Home.stopRecord(true) then Home.needSave = true end
+			if Home.stopRecord(true) then 
+				if _G.RailSaveNow then _G.RailSaveNow() end
+			end
 			return
 		end
 	end
@@ -1718,6 +1720,7 @@ function Home.study(n, lesson)
 	finish()
 end
 
+-- ===== Сканирование и испуг =====
 function Home.kindOf(model, now)
 	local c = Home.kindCache[model]
 	if c and now - c.at < 4 then return c.kind, c.hum end
@@ -2057,6 +2060,7 @@ function Home.perceive(n, now, dt)
 	end
 end
 
+-- ===== Создание жителей =====
 function Home.newModel(i)
 	local rng = Random.new(os.time() + i * 101)
 	local legColors = {
@@ -2157,8 +2161,7 @@ function Home.spawnNpc(index)
 			return
 		end
 		local door = Home.pickDoor()
-		if not door then model:Destroy
-						if not door then model:Destroy() return end
+		if not door then model:Destroy() return end
 		local hum = model:FindFirstChildOfClass("Humanoid")
 		local root = model:FindFirstChild("HumanoidRootPart")
 		if not hum or not root then model:Destroy() return end
@@ -2246,8 +2249,7 @@ function Home.step(dt)
 	end
 end
 RunService.Heartbeat:Connect(Home.step)
-
--- ===== Рельсы, таблички и украшения =====
+-- ===== Рельсы и Сериализация =====
 local function dropIn(m, cf)
 	local nv = Instance.new("NumberValue")
 	nv.Value = 1
@@ -2411,34 +2413,83 @@ local function normalize(raw)
 	return d
 end
 
--- ===== Сохранение в локальный файл =====
-local SAVE_DIR = "KotostRails"
-local SAVE_FILE = SAVE_DIR .. "/save.json"
+-- ===== Сохранение в локальный файл (ЗАЩИЩЕНО ОТ ЗАВИСАНИЙ) =====
+local SAVE_PATHS = {
+	"KotostRails_save.json",
+	"KotostRails/save.json",
+	"KotostRails\\save.json",
+}
+RailSave = { goodPath = nil }
 
-local function ensureSaveDir()
-	if not isfolder(SAVE_DIR) then makefolder(SAVE_DIR) end
+local function tryRead(path)
+	local ok, content = pcall(readfile, path)
+	if ok and type(content) == "string" and content ~= "" then return content end
+	return nil
+end
+
+local function tryWrite(path, encoded)
+	local folder = path:match("^(.+)[/\\][^/\\]+$")
+	if folder then pcall(makefolder, folder) end
+	local ok, err = pcall(writefile, path, encoded)
+	return ok, err
 end
 
 local function readSaveFile()
-	pcall(ensureSaveDir)
-	if not isfile(SAVE_FILE) then return nil end
-	local ok, content = pcall(readfile, SAVE_FILE)
-	if not ok or type(content) ~= "string" or content == "" then return nil end
-	local ok2, decoded = pcall(function() return HttpService:JSONDecode(content) end)
-	if ok2 and type(decoded) == "table" then return decoded end
+	if RailSave.goodPath then
+		local content = tryRead(RailSave.goodPath)
+		if content then
+			local ok, decoded = pcall(function() return HttpService:JSONDecode(content) end)
+			if ok and type(decoded) == "table" then
+				warn("[RailSave] прочитано из " .. RailSave.goodPath)
+				return decoded
+			end
+		end
+		RailSave.goodPath = nil
+	end
+	for _, path in ipairs(SAVE_PATHS) do
+		local content = tryRead(path)
+		if content then
+			local ok, decoded = pcall(function() return HttpService:JSONDecode(content) end)
+			if ok and type(decoded) == "table" then
+				RailSave.goodPath = path
+				warn("[RailSave] прочитано из " .. path)
+				return decoded
+			end
+		end
+	end
 	return nil
 end
 
 local function writeSaveFile(d)
-	if not pcall(ensureSaveDir) then return false end
 	local okEnc, encoded = pcall(function() return HttpService:JSONEncode(d) end)
-	if not okEnc or type(encoded) ~= "string" then return false end
-	return pcall(writefile, SAVE_FILE, encoded)
+	if not okEnc or type(encoded) ~= "string" then
+		warn("[RailSave] JSONEncode упал: " .. tostring(encoded))
+		return false
+	end
+	if RailSave.goodPath then
+		local ok, err = tryWrite(RailSave.goodPath, encoded)
+		if ok then return true end
+		RailSave.goodPath = nil
+	end
+	for _, path in ipairs(SAVE_PATHS) do
+		local ok, err = tryWrite(path, encoded)
+		if ok then
+			RailSave.goodPath = path
+			warn("[RailSave] записано в " .. path)
+			return true
+		end
+	end
+	warn("[RailSave] ВСЕ пути упали — файл не записан")
+	return false
 end
 
 local function flush()
 	if not data then return end
-	if busy then task.delay(1, flush); return end
+	if busy then 
+		warn("[RailSave] flush: busy, принудительно сбрасываю через 5с...")
+		task.delay(5, function() busy = false; flush() end)
+		return 
+	end
 	data.slots[data.active].rails = serialize()
 	saveState = "saving"
 	refreshPill()
@@ -2446,6 +2497,7 @@ local function flush()
 	saveState = ok and "saved" or "error"
 	refreshPill()
 	if slotsOpen then refreshSlots() end
+	if not ok and toast then toast("⚠ Сохранить не удалось — смотри Output", C.bad) end
 end
 
 local function markDirty()
@@ -2458,6 +2510,7 @@ local function markDirty()
 		flush()
 	end)
 end
+_G.RailSaveNow = function() flush() end
 
 -- ===== Вагонетка =====
 function Geo.samplePath(info, s)
@@ -2645,12 +2698,11 @@ function FX.update(dt)
 	local k = (target > FX.add) and FX.IN or FX.OUT
 	FX.add += (target - FX.add) * (1 - math.exp(-dt * k))
 	camera.FieldOfView = math.clamp(base + FX.add, 1, 120)
-	end
-	-- ===== Интерфейс =====
+end
+
+-- ===== Интерфейс =====
 local gui = make("ScreenGui", {
-	Name = "RailBuilderUI",
-	ResetOnSpawn = false,
-	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+	Name = "RailBuilderUI", ResetOnSpawn = false, ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 }, player:WaitForChild("PlayerGui"))
 
 local root = make("Frame", { BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1) }, gui)
@@ -2664,164 +2716,80 @@ end
 updateScale()
 camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale)
 
-local function corner(o, r)
-	return make("UICorner", { CornerRadius = UDim.new(0, r or 10) }, o)
-end
-
+local function corner(o, r) return make("UICorner", { CornerRadius = UDim.new(0, r or 10) }, o) end
 local function stroke(o, color, th, tr)
-	return make("UIStroke", {
-		Color = color, Thickness = th or 1, Transparency = tr or 0,
-		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
-	}, o)
+	return make("UIStroke", { Color = color, Thickness = th or 1, Transparency = tr or 0, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, o)
 end
-
 local function pad(o, v, h)
 	h = h or v
-	return make("UIPadding", {
-		PaddingTop = UDim.new(0, v), PaddingBottom = UDim.new(0, v),
-		PaddingLeft = UDim.new(0, h), PaddingRight = UDim.new(0, h),
-	}, o)
+	return make("UIPadding", { PaddingTop = UDim.new(0, v), PaddingBottom = UDim.new(0, v), PaddingLeft = UDim.new(0, h), PaddingRight = UDim.new(0, h) }, o)
 end
-
 local function label(parent, props)
 	local p = { BackgroundTransparency = 1, Font = Enum.Font.GothamMedium, TextSize = 14, TextColor3 = C.text, Text = "" }
 	for k, v in pairs(props) do p[k] = v end
 	return make("TextLabel", p, parent)
 end
-
 local function button(parent, props, base)
-	local p = {
-		AutoButtonColor = false, BackgroundColor3 = base, BorderSizePixel = 0,
-		Font = Enum.Font.GothamBold, TextColor3 = C.text, TextSize = 15, Text = "",
-	}
+	local p = { AutoButtonColor = false, BackgroundColor3 = base, BorderSizePixel = 0, Font = Enum.Font.GothamBold, TextColor3 = C.text, TextSize = 15, Text = "" }
 	for k, v in pairs(props) do p[k] = v end
 	local b = make("TextButton", p, parent)
 	corner(b, 10)
 	local sc = make("UIScale", {}, b)
 	b:SetAttribute("Base", base)
 	b.MouseEnter:Connect(function() tween(b, 0.12, { BackgroundColor3 = b:GetAttribute("Base"):Lerp(WHITE, 0.12) }) end)
-	b.MouseLeave:Connect(function()
-		tween(b, 0.12, { BackgroundColor3 = b:GetAttribute("Base") })
-		tween(sc, 0.1, { Scale = 1 })
-	end)
+	b.MouseLeave:Connect(function() tween(b, 0.12, { BackgroundColor3 = b:GetAttribute("Base") }); tween(sc, 0.1, { Scale = 1 }) end)
 	b.MouseButton1Down:Connect(function() tween(sc, 0.08, { Scale = 0.94 }) end)
 	b.MouseButton1Up:Connect(function() tween(sc, 0.1, { Scale = 1 }) end)
 	return b
 end
-
-local function setBase(b, color)
-	b:SetAttribute("Base", color)
-	tween(b, 0.15, { BackgroundColor3 = color })
-end
-
+local function setBase(b, color) b:SetAttribute("Base", color); tween(b, 0.15, { BackgroundColor3 = color }) end
 local function setActive(b, on, color)
 	setBase(b, on and (color or C.accentDark) or C.card)
 	local st = b:FindFirstChildOfClass("UIStroke")
 	if st then tween(st, 0.15, { Transparency = on and 0 or 1 }) end
 end
 
+-- Тосты
 local toastHolder = make("Frame", {
 	AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 72),
-	Size = UDim2.fromOffset(340, 0), AutomaticSize = Enum.AutomaticSize.Y,
-	BackgroundTransparency = 1, ZIndex = 20,
+	Size = UDim2.fromOffset(340, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, ZIndex = 20,
 }, root)
-make("UIListLayout", {
-	HorizontalAlignment = Enum.HorizontalAlignment.Center,
-	Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder,
-}, toastHolder)
-
+make("UIListLayout", { HorizontalAlignment = Enum.HorizontalAlignment.Center, Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, toastHolder)
 toast = function(text, color)
 	color = color or C.accent
-	local f = make("Frame", {
-		AutomaticSize = Enum.AutomaticSize.XY, Size = UDim2.fromOffset(0, 0),
-		BackgroundColor3 = C.panel, BackgroundTransparency = 1, BorderSizePixel = 0,
-	}, toastHolder)
-	corner(f, 14)
-	local st = stroke(f, color, 1.5, 1)
-	pad(f, 7, 14)
+	local f = make("Frame", { AutomaticSize = Enum.AutomaticSize.XY, Size = UDim2.fromOffset(0, 0), BackgroundColor3 = C.panel, BackgroundTransparency = 1, BorderSizePixel = 0 }, toastHolder)
+	corner(f, 14); local st = stroke(f, color, 1.5, 1); pad(f, 7, 14)
 	local l = label(f, { AutomaticSize = Enum.AutomaticSize.XY, TextTransparency = 1, Text = text })
-	tween(f, 0.2, { BackgroundTransparency = 0.05 })
-	tween(st, 0.2, { Transparency = 0.15 })
-	tween(l, 0.2, { TextTransparency = 0 })
+	tween(f, 0.2, { BackgroundTransparency = 0.05 }); tween(st, 0.2, { Transparency = 0.15 }); tween(l, 0.2, { TextTransparency = 0 })
 	task.delay(2.4, function()
-		tween(f, 0.3, { BackgroundTransparency = 1 })
-		tween(st, 0.3, { Transparency = 1 })
-		local tw = tween(l, 0.3, { TextTransparency = 1 })
-		tw.Completed:Once(function() f:Destroy() end)
+		tween(f, 0.3, { BackgroundTransparency = 1 }); tween(st, 0.3, { Transparency = 1 })
+		local tw = tween(l, 0.3, { TextTransparency = 1 }); tw.Completed:Once(function() f:Destroy() end)
 	end)
 end
 
--- ===== Карточка игрока =====
+-- Карточка профиля
 do
 	local PW, PH = 300, 118
 	local BLACK = Color3.new(0, 0, 0)
 	local DARK = Color3.fromRGB(20, 24, 36)
 	Profile.W, Profile.H = PW, PH
-
-	local card = make("Frame", {
-		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0, -150),
-		Size = UDim2.fromOffset(PW, PH), BackgroundColor3 = Color3.fromRGB(40, 48, 66), BorderSizePixel = 0,
-		Visible = false, ZIndex = 30, Rotation = -6,
-	}, root)
-	corner(card, 16)
-	stroke(card, BLACK, 4, 0)
-	Profile.scale = make("UIScale", {}, card)
-
+	local card = make("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0, -150), Size = UDim2.fromOffset(PW, PH), BackgroundColor3 = Color3.fromRGB(40, 48, 66), BorderSizePixel = 0, Visible = false, ZIndex = 30, Rotation = -6 }, root)
+	corner(card, 16); stroke(card, BLACK, 4, 0); Profile.scale = make("UIScale", {}, card)
 	local function accent(x, y, w, ax)
-		local f = make("Frame", {
-			AnchorPoint = Vector2.new(ax or 0, 0), Position = UDim2.new(ax or 0, x, 0, y), Size = UDim2.fromOffset(w, 3),
-			BackgroundColor3 = C.accent, BorderSizePixel = 0,
-		}, card)
-		corner(f, 2)
+		local f = make("Frame", { AnchorPoint = Vector2.new(ax or 0, 0), Position = UDim2.new(ax or 0, x, 0, y), Size = UDim2.fromOffset(w, 3), BackgroundColor3 = C.accent, BorderSizePixel = 0 }, card); corner(f, 2)
 	end
-	accent(116, 74, 64)
-	accent(116, 84, 38)
-	accent(-16, 8, 44, 1)
-
-	local ringOuter = make("Frame", {
-		Position = UDim2.fromOffset(12, 13), Size = UDim2.fromOffset(92, 92), BackgroundColor3 = BLACK, BorderSizePixel = 0,
-	}, card)
-	corner(ringOuter, 46)
-	local ringBlue = make("Frame", {
-		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(82, 82),
-		BackgroundColor3 = C.accent, BorderSizePixel = 0,
-	}, ringOuter)
-	corner(ringBlue, 41)
-	local ringIn = make("Frame", {
-		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(72, 72),
-		BackgroundColor3 = DARK, BorderSizePixel = 0,
-	}, ringBlue)
-	corner(ringIn, 36)
-	stroke(ringIn, BLACK, 3, 0)
-	Profile.avatarImg = make("ImageLabel", {
-		Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Image = "", ScaleType = Enum.ScaleType.Crop,
-	}, ringIn)
-	corner(Profile.avatarImg, 36)
-
-	local nameL = label(card, {
-		Position = UDim2.fromOffset(116, 14), Size = UDim2.new(1, -130, 0, 28), Font = Enum.Font.GothamBold, TextSize = 21,
-		TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = player.DisplayName,
-	})
+	accent(116, 74, 64); accent(116, 84, 38); accent(-16, 8, 44, 1)
+	local ringOuter = make("Frame", { Position = UDim2.fromOffset(12, 13), Size = UDim2.fromOffset(92, 92), BackgroundColor3 = BLACK, BorderSizePixel = 0 }, card); corner(ringOuter, 46)
+	local ringBlue = make("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(82, 82), BackgroundColor3 = C.accent, BorderSizePixel = 0 }, ringOuter); corner(ringBlue, 41)
+	local ringIn = make("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(72, 72), BackgroundColor3 = DARK, BorderSizePixel = 0 }, ringBlue); corner(ringIn, 36); stroke(ringIn, BLACK, 3, 0)
+	Profile.avatarImg = make("ImageLabel", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Image = "", ScaleType = Enum.ScaleType.Crop }, ringIn); corner(Profile.avatarImg, 36)
+	local nameL = label(card, { Position = UDim2.fromOffset(116, 14), Size = UDim2.new(1, -130, 0, 28), Font = Enum.Font.GothamBold, TextSize = 21, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = player.DisplayName })
 	make("UIStroke", { Color = BLACK, Thickness = 2 }, nameL)
-	local userL = label(card, {
-		Position = UDim2.fromOffset(116, 42), Size = UDim2.new(1, -130, 0, 18), TextSize = 13, TextColor3 = C.sub,
-		TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = "@" .. player.Name,
-	})
+	local userL = label(card, { Position = UDim2.fromOffset(116, 42), Size = UDim2.new(1, -130, 0, 18), TextSize = 13, TextColor3 = C.sub, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = "@" .. player.Name })
 	make("UIStroke", { Color = BLACK, Thickness = 1.5 }, userL)
-
-	local chipOuter = make("Frame", {
-		AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -14, 1, -14), Size = UDim2.fromOffset(64, 38),
-		BackgroundColor3 = BLACK, BorderSizePixel = 0,
-	}, card)
-	corner(chipOuter, 11)
-	local chip = make("Frame", {
-		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(57, 31),
-		BackgroundColor3 = DARK, BorderSizePixel = 0,
-	}, chipOuter)
-	corner(chip, 8)
-	stroke(chip, C.accent, 2.5, 0)
-	Profile.flagL = label(chip, { Size = UDim2.fromScale(1, 1), TextSize = 21, Text = "🌍" })
-	Profile.card = card
+	local chipOuter = make("Frame", { AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -14, 1, -14), Size = UDim2.fromOffset(64, 38), BackgroundColor3 = BLACK, BorderSizePixel = 0 }, card); corner(chipOuter, 11)
+	local chip = make("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(57, 31), BackgroundColor3 = DARK, BorderSizePixel = 0 }, chipOuter); corner(chip, 8); stroke(chip, C.accent, 2.5, 0)
+	Profile.flagL = label(chip, { Size = UDim2.fromScale(1, 1), TextSize = 21, Text = "🌍" }); Profile.card = card
 end
 
 function Profile.flag(code)
@@ -2830,7 +2798,6 @@ function Profile.flag(code)
 	if a < 65 or a > 90 or b < 65 or b > 90 then return "🌍" end
 	return utf8.char(0x1F1E6 + a - 65, 0x1F1E6 + b - 65)
 end
-
 function Profile.fetchRegion()
 	local service = game:GetService("LocalizationService")
 	local ok, code = pcall(function() return service:GetCountryRegionForPlayerAsync(player) end)
@@ -2839,33 +2806,19 @@ function Profile.fetchRegion()
 	if ok2 and type(locale) == "string" then return locale:match("[-_](%a%a)$") end
 	return nil
 end
-
 function Profile.fetchAvatar()
 	local last
 	for _ = 1, 8 do
-		local ok, content, ready = pcall(function()
-			return Players:GetUserThumbnailAsync(player.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
-		end)
-		if ok and content then
-			last = content
-			if ready then break end
-		end
+		local ok, content, ready = pcall(function() return Players:GetUserThumbnailAsync(player.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150) end)
+		if ok and content then last = content; if ready then break end end
 		task.wait(0.5)
 	end
 	return last
 end
-
 Profile.pending = 2
 function Profile.load()
-	task.spawn(function()
-		local img = Profile.fetchAvatar()
-		if img then Profile.avatarImg.Image = img end
-		Profile.pending -= 1
-	end)
-	task.spawn(function()
-		Profile.flagL.Text = Profile.flag(Profile.fetchRegion())
-		Profile.pending -= 1
-	end)
+	task.spawn(function() local img = Profile.fetchAvatar(); if img then Profile.avatarImg.Image = img end; Profile.pending -= 1 end)
+	task.spawn(function() Profile.flagL.Text = Profile.flag(Profile.fetchRegion()); Profile.pending -= 1 end)
 end
 task.spawn(Profile.load)
 
@@ -2873,15 +2826,11 @@ function Profile.drop()
 	local t0 = os.clock()
 	while Profile.pending > 0 and os.clock() - t0 < 2 do task.wait(0.1) end
 	local card = Profile.card
-	card.Position = UDim2.new(0.5, 0, 0, -150)
-	card.Rotation = -6
-	Profile.scale.Scale = 1
-	card.Visible = true
+	card.Position = UDim2.new(0.5, 0, 0, -150); card.Rotation = -6; Profile.scale.Scale = 1; card.Visible = true
 	tween(card, 1.2, { Position = UDim2.new(0.5, 0, 0.5, -20) }, Enum.EasingStyle.Bounce)
 	tween(card, 0.9, { Rotation = 0 }, Enum.EasingStyle.Quint)
 	task.wait(1.2)
 end
-
 function Profile.settle()
 	local card = Profile.card
 	if Profile.KEEP then
@@ -2894,11 +2843,8 @@ function Profile.settle()
 	end
 end
 
--- ===== Плашка активного слота =====
-local pill = button(root, {
-	AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 10),
-	Size = UDim2.fromOffset(310, 52), Visible = false,
-}, C.panel)
+-- Плашка слота
+local pill = button(root, { AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 10), Size = UDim2.fromOffset(310, 52), Visible = false }, C.panel)
 stroke(pill, WHITE, 1, 0.88)
 label(pill, { Position = UDim2.fromOffset(12, 0), Size = UDim2.fromOffset(30, 52), Font = Enum.Font.GothamBold, TextSize = 22, Text = "📁" })
 local pillTop = label(pill, { Position = UDim2.fromOffset(48, 7), Size = UDim2.new(1, -160, 0, 14), TextSize = 11, TextColor3 = C.sub, TextXAlignment = Enum.TextXAlignment.Left })
@@ -2913,59 +2859,33 @@ refreshPill = function()
 	if saveState == "saved" then txt, col = "✓ сохранено", C.good
 	elseif saveState == "saving" then txt, col = "● сохраняю…", C.warn
 	elseif saveState == "error" then txt, col = "⚠ ошибка", C.bad end
-	pillSave.Text = txt
-	pillSave.TextColor3 = col
+	pillSave.Text = txt; pillSave.TextColor3 = col
 end
 
--- ===== Нижняя панель =====
-local dock = make("Frame", {
-	AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -14),
-	Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.XY,
-	BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false,
-}, root)
-corner(dock, 18)
-stroke(dock, WHITE, 1, 0.88)
-pad(dock, 8)
-make("UIListLayout", {
-	FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8),
-	SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center,
-}, dock)
+-- Нижняя панель
+local dock = make("Frame", { AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -14), Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.XY, BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false }, root)
+corner(dock, 18); stroke(dock, WHITE, 1, 0.88); pad(dock, 8)
+make("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center }, dock)
 
 local function dockButton(parent, icon, text, order, width)
-	local b = button(parent, { Size = UDim2.fromOffset(width or 66, 62), LayoutOrder = order }, C.card)
-	stroke(b, C.accent, 2, 1)
+	local b = button(parent, { Size = UDim2.fromOffset(width or 66, 62), LayoutOrder = order }, C.card); stroke(b, C.accent, 2, 1)
 	local ic = label(b, { Size = UDim2.new(1, 0, 0, 32), Position = UDim2.fromOffset(0, 5), Font = Enum.Font.GothamBold, TextSize = 24, Text = icon })
 	local lb = label(b, { Size = UDim2.new(1, 0, 0, 16), Position = UDim2.new(0, 0, 1, -21), TextSize = 11, TextColor3 = C.sub, Text = text })
 	return b, ic, lb
 end
 
-local buildBtn, buildIcon, buildLbl = dockButton(dock, "🚂", "Строить", 1)
-setBase(buildBtn, C.goodDark)
+local buildBtn, buildIcon, buildLbl = dockButton(dock, "🚂", "Строить", 1); setBase(buildBtn, C.goodDark)
 local slotsBtn = dockButton(dock, "📁", "Слоты", 2)
-local divider = make("Frame", {
-	Size = UDim2.fromOffset(2, 44), BackgroundColor3 = WHITE, BackgroundTransparency = 0.88,
-	BorderSizePixel = 0, LayoutOrder = 4, Visible = false,
-}, dock)
-local tools = make("Frame", {
-	Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.XY,
-	BackgroundTransparency = 1, LayoutOrder = 5, Visible = false,
-}, dock)
-make("UIListLayout", {
-	FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
-	SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center,
-}, tools)
+local divider = make("Frame", { Size = UDim2.fromOffset(2, 44), BackgroundColor3 = WHITE, BackgroundTransparency = 0.88, BorderSizePixel = 0, LayoutOrder = 4, Visible = false }, dock)
+local tools = make("Frame", { Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.XY, BackgroundTransparency = 1, LayoutOrder = 5, Visible = false }, dock)
+make("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center }, tools)
 
 local function toolButton(icon, text, order)
-	local b, ic, lb = dockButton(tools, icon, text, order, 58)
-	lb.TextSize = 10
-	return b, ic, lb
+	local b, ic, lb = dockButton(tools, icon, text, order, 58); lb.TextSize = 10; return b, ic, lb
 end
 
 function Decor.icon(btn, image)
-	return make("ImageLabel", {
-		AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 4), Size = UDim2.fromOffset(34, 34),
-		BackgroundTransparency = 1, Image = image, ScaleType = Enum.ScaleType.Fit,
-	}, btn)
+	return make("ImageLabel", { AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 4), Size = UDim2.fromOffset(34, 34), BackgroundTransparency = 1, Image = image, ScaleType = Enum.ScaleType.Fit }, btn)
 end
 
 local toolBtns = {}
@@ -2977,39 +2897,20 @@ toolBtns.cart = toolButton("🚃", "Вагонетка", 5)
 toolBtns.sign = toolButton("🪧", "Табличка", 6)
 toolBtns.edit = toolButton("✏️", "Текст", 7)
 do
-	local b, ic = toolButton("🎄", "Декор", 8)
-	ic.Text = ""
-	Decor.icon(b, IMG.DECOR)
-	Decor.btn = b
+	local b, ic = toolButton("🎄", "Декор", 8); ic.Text = ""; Decor.icon(b, IMG.DECOR); Decor.btn = b
 end
 local rotateBtn = toolButton("↻", "Повернуть", 9)
-local actionBtn, actionIcon, actionLbl = toolButton("✔", "Поставить", 10)
-setBase(actionBtn, C.goodDark)
-actionBtn.Visible = UserInputService.TouchEnabled
+local actionBtn, actionIcon, actionLbl = toolButton("✔", "Поставить", 10); setBase(actionBtn, C.goodDark); actionBtn.Visible = UserInputService.TouchEnabled
 Decor.placeImg = Decor.icon(actionBtn, IMG.PLACE)
 
--- ===== Свободный режим: интерфейс =====
+-- Свободный режим UI
 local FUI = {}
-
-FUI.dock = make("Frame", {
-	AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -100),
-	Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.XY,
-	BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false,
-}, root)
-corner(FUI.dock, 18)
-stroke(FUI.dock, WHITE, 1, 0.88)
-pad(FUI.dock, 8)
-make("UIListLayout", {
-	FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
-	SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center,
-}, FUI.dock)
-
+FUI.dock = make("Frame", { AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -100), Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.XY, BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false }, root)
+corner(FUI.dock, 18); stroke(FUI.dock, WHITE, 1, 0.88); pad(FUI.dock, 8)
+make("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center }, FUI.dock)
 do
 	local function freeButton(key, icon, text, order)
-		local b, _, lb = dockButton(FUI.dock, icon, text, order, 64)
-		FUI[key] = b
-		FUI[key .. "Lbl"] = lb
-		return b
+		local b, _, lb = dockButton(FUI.dock, icon, text, order, 64); FUI[key] = b; FUI[key .. "Lbl"] = lb; return b
 	end
 	toolBtns.loop = freeButton("loop", "🎢", "Петля", 1)
 	freeButton("pitch", "↗", "Наклон", 2)
@@ -3017,111 +2918,61 @@ do
 	freeButton("side", "↔", "Сторона", 4)
 	freeButton("magnet", "🧲", "Магнит", 5)
 	freeButton("step", "📏", "Шаг", 6)
-	FUI.pitchLbl.TextSize = 10
-	FUI.rollLbl.TextSize = 10
-	FUI.stepLbl.TextSize = 10
+	FUI.pitchLbl.TextSize = 10; FUI.rollLbl.TextSize = 10; FUI.stepLbl.TextSize = 10
 	FUI.only = { FUI.pitch, FUI.roll, FUI.side, FUI.magnet, FUI.step }
 end
 
-FUI.mark = make("Part", {
-	Name = "MagnetMark", Shape = Enum.PartType.Ball, Size = Vector3.new(1.1, 1.1, 1.1),
-	Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false,
-	Material = Enum.Material.Neon, Color = C.accent, Transparency = 0.15,
-})
+FUI.mark = make("Part", { Name = "MagnetMark", Shape = Enum.PartType.Ball, Size = Vector3.new(1.1, 1.1, 1.1), Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false, Material = Enum.Material.Neon, Color = C.accent, Transparency = 0.15 })
 
 local function refreshFreeButtons()
 	local o = FM.snapped and FM.rel or FM
-	FUI.pitchLbl.Text = "Наклон " .. math.round(o.pitch) .. "°"
-	FUI.rollLbl.Text = "Крен " .. math.round(o.roll) .. "°"
-	FUI.stepLbl.Text = "Шаг " .. FM.stepAngle() .. "°"
+	FUI.pitchLbl.Text = "Наклон " .. math.round(o.pitch) .. "°"; FUI.rollLbl.Text = "Крен " .. math.round(o.roll) .. "°"; FUI.stepLbl.Text = "Шаг " .. FM.stepAngle() .. "°"
 	FUI.magnetLbl.Text = (FM.magnet and FM.snapped) and "Прилип ✓" or "Магнит"
-	setActive(FUI.side, FM.flip, C.accentDark)
-	setActive(FUI.magnet, FM.magnet, C.goodDark)
+	setActive(FUI.side, FM.flip, C.accentDark); setActive(FUI.magnet, FM.magnet, C.goodDark)
 end
 refreshFreeButtons()
 
 do
 	local SW_W, SW_H, KNOB = 54, 32, 28
-	FUI.card = make("Frame", {
-		Position = UDim2.fromOffset(14, 10), Size = UDim2.fromOffset(226, 54),
-		BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false,
-	}, root)
-	corner(FUI.card, 16)
-	stroke(FUI.card, WHITE, 1, 0.88)
-	label(FUI.card, {
-		Position = UDim2.fromOffset(14, 8), Size = UDim2.new(1, -92, 0, 20),
-		Font = Enum.Font.GothamBold, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left,
-		Text = "Свободный режим",
-	})
-	FUI.sub = label(FUI.card, {
-		Position = UDim2.fromOffset(14, 28), Size = UDim2.new(1, -92, 0, 16),
-		TextSize = 11, TextColor3 = C.sub, TextXAlignment = Enum.TextXAlignment.Left,
-	})
-	FUI.track = make("TextButton", {
-		AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -12, 0.5, 0),
-		Size = UDim2.fromOffset(SW_W, SW_H), BackgroundColor3 = C.swOff,
-		AutoButtonColor = false, BorderSizePixel = 0, Text = "",
-	}, FUI.card)
+	FUI.card = make("Frame", { Position = UDim2.fromOffset(14, 10), Size = UDim2.fromOffset(226, 54), BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false }, root)
+	corner(FUI.card, 16); stroke(FUI.card, WHITE, 1, 0.88)
+	label(FUI.card, { Position = UDim2.fromOffset(14, 8), Size = UDim2.new(1, -92, 0, 20), Font = Enum.Font.GothamBold, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left, Text = "Свободный режим" })
+	FUI.sub = label(FUI.card, { Position = UDim2.fromOffset(14, 28), Size = UDim2.new(1, -92, 0, 16), TextSize = 11, TextColor3 = C.sub, TextXAlignment = Enum.TextXAlignment.Left })
+	FUI.track = make("TextButton", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -12, 0.5, 0), Size = UDim2.fromOffset(SW_W, SW_H), BackgroundColor3 = C.swOff, AutoButtonColor = false, BorderSizePixel = 0, Text = "" }, FUI.card)
 	corner(FUI.track, SW_H / 2)
-	FUI.knob = make("Frame", {
-		Position = UDim2.fromOffset(2, 2), Size = UDim2.fromOffset(KNOB, KNOB),
-		BackgroundColor3 = WHITE, BorderSizePixel = 0,
-	}, FUI.track)
-	corner(FUI.knob, KNOB / 2)
-	stroke(FUI.knob, Color3.new(0, 0, 0), 1, 0.8)
-
+	FUI.knob = make("Frame", { Position = UDim2.fromOffset(2, 2), Size = UDim2.fromOffset(KNOB, KNOB), BackgroundColor3 = WHITE, BorderSizePixel = 0 }, FUI.track)
+	corner(FUI.knob, KNOB / 2); stroke(FUI.knob, Color3.new(0, 0, 0), 1, 0.8)
 	function FUI.refreshSwitch(animate)
 		local on = FM.on
-		local goalPos = UDim2.fromOffset(on and (SW_W - KNOB - 2) or 2, 2)
-		local goalSize = UDim2.fromOffset(KNOB, KNOB)
+		local goalPos = UDim2.fromOffset(on and (SW_W - KNOB - 2) or 2, 2); local goalSize = UDim2.fromOffset(KNOB, KNOB)
 		local color = on and C.swOn or C.swOff
 		if animate then
-			tween(FUI.knob, 0.28, { Position = goalPos, Size = goalSize }, Enum.EasingStyle.Quint)
-			tween(FUI.track, 0.22, { BackgroundColor3 = color })
-		else
-			FUI.knob.Position = goalPos
-			FUI.knob.Size = goalSize
-			FUI.track.BackgroundColor3 = color
-		end
-		FUI.sub.Text = on and "без правил · петли" or "по сетке, как обычно"
-		FUI.sub.TextColor3 = on and C.good or C.sub
+			tween(FUI.knob, 0.28, { Position = goalPos, Size = goalSize }, Enum.EasingStyle.Quint); tween(FUI.track, 0.22, { BackgroundColor3 = color })
+		else FUI.knob.Position = goalPos; FUI.knob.Size = goalSize; FUI.track.BackgroundColor3 = color end
+		FUI.sub.Text = on and "без правил · петли" or "по сетке, как обычно"; FUI.sub.TextColor3 = on and C.good or C.sub
 	end
-
 	FUI.track.MouseButton1Down:Connect(function()
 		local w = KNOB + 6
-		tween(FUI.knob, 0.1, {
-			Size = UDim2.fromOffset(w, KNOB),
-			Position = UDim2.fromOffset(FM.on and (SW_W - w - 2) or 2, 2),
-		})
+		tween(FUI.knob, 0.1, { Size = UDim2.fromOffset(w, KNOB), Position = UDim2.fromOffset(FM.on and (SW_W - w - 2) or 2, 2) })
 	end)
 	FUI.track.MouseLeave:Connect(function() FUI.refreshSwitch(true) end)
 end
 FUI.refreshSwitch(false)
 
-local hint = make("TextLabel", {
-	AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -106),
-	Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.XY,
-	BackgroundColor3 = C.panel, BackgroundTransparency = 0.2, Font = Enum.Font.GothamMedium,
-	TextSize = 13, TextColor3 = C.text, Text = "", Visible = false,
-}, root)
-corner(hint, 12)
-pad(hint, 7, 14)
+local hint = make("TextLabel", { AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -106), Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.XY, BackgroundColor3 = C.panel, BackgroundTransparency = 0.2, Font = Enum.Font.GothamMedium, TextSize = 13, TextColor3 = C.text, Text = "", Visible = false }, root)
+corner(hint, 12); pad(hint, 7, 14)
 
 local HINTS = {
-	straight = TOUCH_ONLY and "Тапни место → «Поставить»  ·  ▲▼ — высота" or "ЛКМ — поставить  ·  зажми и веди — цепочка  ·  R — повернуть  ·  E / Q — выше / ниже",
-	curve = TOUCH_ONLY and "Тапни место → «Поставить»  ·  поворот соединяет две соседние стороны" or "ЛКМ — поставить поворот  ·  R — повернуть  ·  E / Q — выше / ниже",
-	ramp = TOUCH_ONLY and "Уклон: нижний конец на текущей высоте. Подъём: ▲ после постановки" or "Уклон: нижний конец — на текущей высоте  ·  R — повернуть  ·  E / Q — выше / ниже",
-	erase = TOUCH_ONLY and "Тапни рельсу, табличку или украшение → «Удалить»" or "Наведи на рельсу, табличку или украшение и нажми ЛКМ  ·  зажми и води — стирать подряд",
-	cart = TOUCH_ONLY and "Тапни рельсу → «Поставить» вагонетку" or "Нажми на рельсу, чтобы поставить на неё вагонетку",
-	sign = TOUCH_ONLY and "Напиши текст в поле → тапни место → «Поставить»  ·  ↻ — повернуть" or "Напиши текст в поле выше  ·  ЛКМ — поставить  ·  R — повернуть  ·  E / Q — выше / ниже",
-	edit = TOUCH_ONLY and "Напиши новый текст → тапни табличку → «Применить»" or "Напиши новый текст в поле выше и нажми ЛКМ на табличке",
+	straight = "ЛКМ — поставить  ·  R — повернуть  ·  E / Q — выше / ниже",
+	curve = "ЛКМ — поставить поворот  ·  R — повернуть",
+	ramp = "Уклон: нижний конец — на текущей высоте",
+	erase = "Наведи на рельсу или украшение и нажми ЛКМ",
+	cart = "Нажми на рельсу, чтобы поставить вагонетку",
+	sign = "Напиши текст выше  ·  ЛКМ — поставить  ·  R — повернуть",
+	edit = "Напиши новый текст и нажми ЛКМ на табличке",
 	loop = "Мёртвая петля ставится только в свободном режиме",
-	decor = TOUCH_ONLY and "Выбери украшение → тапни место → «Поставить»  ·  ↻ — повернуть" or "ЛКМ — поставить  ·  R — повернуть  ·  E / Q — выше / ниже  ·  можно ставить и на рельсы",
-	free = {
-		place = TOUCH_ONLY and "Тапни место → «Поставить»  ·  внизу: наклон, крен, магнит" or "ЛКМ — поставить  ·  R поворот  ·  T наклон  ·  Y крен  ·  M магнит",
-		loop = TOUCH_ONLY and "Подведи к концу рельсы — прилипнет  ·  «Поставить»" or "Подведи к концу рельсы — прилипнет 🧲  ·  ЛКМ — поставить",
-		sign = TOUCH_ONLY and "Напиши текст → тапни место → «Поставить»" or "Текст в поле выше  ·  ЛКМ — поставить  ·  R / T / Y — повороты",
-	},
+	decor = "ЛКМ — поставить  ·  R — повернуть  ·  можно ставить и на рельсы",
+	free = { place = "ЛКМ — поставить  ·  R поворот  ·  T наклон  ·  Y крен  ·  M магнит", loop = "Подведи к концу рельсы — прилипнет 🧲  ·  ЛКМ — поставить", sign = "Текст в поле выше  ·  ЛКМ — поставить" },
 }
 local ACTIONS = {
 	straight = { "✔", "Поставить", true }, curve = { "✔", "Поставить", true }, ramp = { "✔", "Поставить", true },
@@ -3130,46 +2981,21 @@ local ACTIONS = {
 	decor = { "✔", "Поставить", true },
 }
 
--- ===== Поле текста таблички =====
-local signPanel = make("Frame", {
-	AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -150),
-	Size = UDim2.fromOffset(330, 78),
-	BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false,
-}, root)
-corner(signPanel, 14)
-stroke(signPanel, WHITE, 1, 0.88)
-label(signPanel, {
-	Position = UDim2.fromOffset(12, 6), Size = UDim2.new(1, -90, 0, 16), TextSize = 11, TextColor3 = C.sub,
-	TextXAlignment = Enum.TextXAlignment.Left, Text = "🪧 ТЕКСТ ТАБЛИЧКИ",
-})
-local signCount = label(signPanel, {
-	AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -12, 0, 6), Size = UDim2.fromOffset(70, 16),
-	TextSize = 11, TextColor3 = C.sub, TextXAlignment = Enum.TextXAlignment.Right,
-})
-local signBox = make("TextBox", {
-	Position = UDim2.fromOffset(10, 26), Size = UDim2.new(1, -20, 0, 42),
-	BackgroundColor3 = C.bg, BorderSizePixel = 0, TextColor3 = C.text, PlaceholderColor3 = C.sub,
-	PlaceholderText = "Напиши что угодно…", Font = Enum.Font.GothamMedium, TextSize = 15,
-	ClearTextOnFocus = false, MultiLine = true, TextWrapped = true, ClipsDescendants = true,
-	TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
-	Text = signText,
-}, signPanel)
-corner(signBox, 8)
-pad(signBox, 4, 8)
-
-local function refreshSignCounter()
-	signCount.Text = (utf8.len(signText) or 0) .. "/" .. SIGN_MAX_CHARS
-end
+-- Поле текста таблички
+local signPanel = make("Frame", { AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -150), Size = UDim2.fromOffset(330, 78), BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false }, root)
+corner(signPanel, 14); stroke(signPanel, WHITE, 1, 0.88)
+label(signPanel, { Position = UDim2.fromOffset(12, 6), Size = UDim2.new(1, -90, 0, 16), TextSize = 11, TextColor3 = C.sub, TextXAlignment = Enum.TextXAlignment.Left, Text = "🪧 ТЕКСТ ТАБЛИЧКИ" })
+local signCount = label(signPanel, { AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -12, 0, 6), Size = UDim2.fromOffset(70, 16), TextSize = 11, TextColor3 = C.sub, TextXAlignment = Enum.TextXAlignment.Right })
+local signBox = make("TextBox", { Position = UDim2.fromOffset(10, 26), Size = UDim2.new(1, -20, 0, 42), BackgroundColor3 = C.bg, BorderSizePixel = 0, TextColor3 = C.text, PlaceholderColor3 = C.sub, PlaceholderText = "Напиши что угодно…", Font = Enum.Font.GothamMedium, TextSize = 15, ClearTextOnFocus = false, MultiLine = true, TextWrapped = true, ClipsDescendants = true, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, Text = signText }, signPanel)
+corner(signBox, 8); pad(signBox, 4, 8)
+local function refreshSignCounter() signCount.Text = (utf8.len(signText) or 0) .. "/" .. SIGN_MAX_CHARS end
 refreshSignCounter()
-
 signBox:GetPropertyChangedSignal("Text"):Connect(function()
 	local t = cleanSignText(signBox.Text)
 	if t ~= signBox.Text then signBox.Text = t; return end
-	signText = t
-	refreshSignCounter()
+	signText = t; refreshSignCounter()
 	if ghost and ghostKind == "sign" then setSignText(ghost, signText) end
 end)
-
 signBox.FocusLost:Connect(function()
 	local t = finalSignText(signBox.Text)
 	if t ~= signBox.Text then signBox.Text = t end
@@ -3177,99 +3003,48 @@ end)
 
 local function layoutBottom()
 	local extra = 0
-	if Decor.open then extra = 46
-	elseif FUI.dock.Visible then extra = 80 end
-	hint.Position = UDim2.new(0.5, 0, 1, -106 - extra)
-	signPanel.Position = UDim2.new(0.5, 0, 1, -150 - extra)
+	if Decor.open then extra = 46 elseif FUI.dock.Visible then extra = 80 end
+	hint.Position = UDim2.new(0.5, 0, 1, -106 - extra); signPanel.Position = UDim2.new(0.5, 0, 1, -150 - extra)
 end
 
--- ===== Панель украшений =====
-Decor.dock = make("Frame", {
-	AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -14),
-	Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.XY,
-	BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false,
-}, root)
-corner(Decor.dock, 18)
-stroke(Decor.dock, WHITE, 1, 0.88)
-pad(Decor.dock, 8)
-make("UIListLayout", {
-	FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8),
-	SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center,
-}, Decor.dock)
-
+-- Панель украшений
+Decor.dock = make("Frame", { AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -14), Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.XY, BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false }, root)
+corner(Decor.dock, 18); stroke(Decor.dock, WHITE, 1, 0.88); pad(Decor.dock, 8)
+make("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center }, Decor.dock)
 Decor.backBtn = dockButton(Decor.dock, "◀", "Назад", 1, 62)
 Decor.prevBtn = button(Decor.dock, { Size = UDim2.fromOffset(30, 100), LayoutOrder = 2, Text = "‹", TextSize = 28 }, C.card)
-Decor.scroll = make("ScrollingFrame", {
-	Size = UDim2.fromOffset(86 * 4.5 + 8 * 4, 108), LayoutOrder = 3,
-	BackgroundTransparency = 1, BorderSizePixel = 0, ScrollingDirection = Enum.ScrollingDirection.X,
-	ScrollBarThickness = 4, ScrollBarImageColor3 = C.sub,
-	CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.X,
-}, Decor.dock)
-pad(Decor.scroll, 3)
-make("UIListLayout", {
-	FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder,
-}, Decor.scroll)
+Decor.scroll = make("ScrollingFrame", { Size = UDim2.fromOffset(86 * 4.5 + 8 * 4, 108), LayoutOrder = 3, BackgroundTransparency = 1, BorderSizePixel = 0, ScrollingDirection = Enum.ScrollingDirection.X, ScrollBarThickness = 4, ScrollBarImageColor3 = C.sub, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.X }, Decor.dock)
+pad(Decor.scroll, 3); make("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }, Decor.scroll)
 Decor.nextBtn = button(Decor.dock, { Size = UDim2.fromOffset(30, 100), LayoutOrder = 4, Text = "›", TextSize = 28 }, C.card)
 for i, item in ipairs(Decor.list) do
-	local card = button(Decor.scroll, { Size = UDim2.fromOffset(86, 100), LayoutOrder = i }, C.card)
-	stroke(card, C.accent, 2, 1)
+	local card = button(Decor.scroll, { Size = UDim2.fromOffset(86, 100), LayoutOrder = i }, C.card); stroke(card, C.accent, 2, 1)
 	Decor.addSpinner(card, item.key)
-	label(card, {
-		Position = UDim2.fromOffset(0, 72), Size = UDim2.new(1, 0, 0, 16),
-		Font = Enum.Font.GothamBold, TextSize = 12, Text = item.name,
-	})
-	label(card, {
-		Position = UDim2.fromOffset(0, 87), Size = UDim2.new(1, 0, 0, 12),
-		TextSize = 9, TextColor3 = C.sub, Text = item.tag,
-	})
+	label(card, { Position = UDim2.fromOffset(0, 72), Size = UDim2.new(1, 0, 0, 16), Font = Enum.Font.GothamBold, TextSize = 12, Text = item.name })
+	label(card, { Position = UDim2.fromOffset(0, 87), Size = UDim2.new(1, 0, 0, 12), TextSize = 9, TextColor3 = C.sub, Text = item.tag })
 	Decor.cards[item.key] = card
 end
-make("Frame", {
-	Size = UDim2.fromOffset(2, 44), BackgroundColor3 = WHITE, BackgroundTransparency = 0.88,
-	BorderSizePixel = 0, LayoutOrder = 20,
-}, Decor.dock)
+make("Frame", { Size = UDim2.fromOffset(2, 44), BackgroundColor3 = WHITE, BackgroundTransparency = 0.88, BorderSizePixel = 0, LayoutOrder = 20 }, Decor.dock)
 Decor.rotateBtn = dockButton(Decor.dock, "↻", "Повернуть", 21, 62)
 do
-	local b, ic = dockButton(Decor.dock, "", "Поставить", 22, 62)
-	Decor.actionBtn = b
-	setBase(b, C.goodDark)
-	b.Visible = UserInputService.TouchEnabled
-	Decor.icon(b, IMG.PLACE)
+	local b, ic = dockButton(Decor.dock, "", "Поставить", 22, 62); Decor.actionBtn = b; setBase(b, C.goodDark); b.Visible = UserInputService.TouchEnabled; Decor.icon(b, IMG.PLACE)
 end
 
--- ===== Панель высоты =====
-local hpanel = make("Frame", {
-	AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 14, 0.4, 0),
-	Size = UDim2.fromOffset(78, 0), AutomaticSize = Enum.AutomaticSize.Y,
-	BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false,
-}, root)
-corner(hpanel, 16)
-stroke(hpanel, WHITE, 1, 0.88)
-pad(hpanel, 8)
-make("UIListLayout", {
-	Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder,
-	HorizontalAlignment = Enum.HorizontalAlignment.Center,
-}, hpanel)
+-- Панель высоты
+local hpanel = make("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 14, 0.4, 0), Size = UDim2.fromOffset(78, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false }, root)
+corner(hpanel, 16); stroke(hpanel, WHITE, 1, 0.88); pad(hpanel, 8)
+make("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder, HorizontalAlignment = Enum.HorizontalAlignment.Center }, hpanel)
 label(hpanel, { Size = UDim2.new(1, 0, 0, 14), TextSize = 11, TextColor3 = C.sub, Text = "ВЫСОТА", LayoutOrder = 0 })
 local hUp = button(hpanel, { Size = UDim2.new(1, 0, 0, 42), LayoutOrder = 1, Text = "▲", TextSize = 20 }, C.card)
 local hLabel = label(hpanel, { Size = UDim2.new(1, 0, 0, 30), Font = Enum.Font.GothamBold, TextSize = 24, Text = "0", LayoutOrder = 2 })
 local hDown = button(hpanel, { Size = UDim2.new(1, 0, 0, 42), LayoutOrder = 3, Text = "▼", TextSize = 20 }, C.card)
 local hReset = button(hpanel, { Size = UDim2.new(1, 0, 0, 32), LayoutOrder = 4, Text = "🌍 земля", TextSize = 11 }, C.bg)
 
--- ===== Панель вагонетки =====
-local hud = make("Frame", {
-	AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -14, 0.45, 0),
-	Size = UDim2.fromOffset(180, 0), AutomaticSize = Enum.AutomaticSize.Y,
-	BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false,
-}, root)
-corner(hud, 16)
-stroke(hud, WHITE, 1, 0.88)
-pad(hud, 10)
+-- Панель вагонетки
+local hud = make("Frame", { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -14, 0.45, 0), Size = UDim2.fromOffset(180, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false }, root)
+corner(hud, 16); stroke(hud, WHITE, 1, 0.88); pad(hud, 10)
 make("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, hud)
 label(hud, { Size = UDim2.new(1, 0, 0, 24), Font = Enum.Font.GothamBold, TextSize = 16, Text = "🚃 Вагонетка", LayoutOrder = 0 })
-local function hudButton(text, order, base)
-	return button(hud, { Size = UDim2.new(1, 0, 0, 40), LayoutOrder = order, Text = text, TextSize = 14 }, base or C.card)
-end
+local function hudButton(text, order, base) return button(hud, { Size = UDim2.new(1, 0, 0, 40), LayoutOrder = order, Text = text, TextSize = 14 }, base or C.card) end
 local hudGo = hudButton("▶ Ехать", 1, C.goodDark)
 local hudRev = hudButton("⇄ Развернуть", 2)
 local hudSpeed = hudButton("", 3)
@@ -3280,396 +3055,158 @@ local hudHint = label(hud, { Size = UDim2.new(1, 0, 0, 30), TextSize = 11, TextC
 refreshCartHud = function()
 	hud.Visible = cart ~= nil
 	if not cart then return end
-	hudGo.Text = cart.running and "⏸ Стоп" or "▶ Ехать"
-	setBase(hudGo, cart.running and C.badDark or C.goodDark)
+	hudGo.Text = cart.running and "⏸ Стоп" or "▶ Ехать"; setBase(hudGo, cart.running and C.badDark or C.goodDark)
 	hudSpeed.Text = CART_SPEED_NAMES[cart.speedIdx]
 	hudRide.Text = cart.riding and "🚪 Слезть" or "🪑 Сесть"
 	hudHint.Text = cart.riding and "Прыжок — тоже слезть" or "Сядь, чтобы прокатиться"
 end
+hudGo.Activated:Connect(function() if cart then cart.running = not cart.running; refreshCartHud() end end)
+hudRev.Activated:Connect(function() if cart then cart.dir = -cart.dir; cart.speed = 0; cart.wait = 0; cart.rebase = true end end)
+hudSpeed.Activated:Connect(function() if cart then cart.speedIdx = cart.speedIdx % #CART_SPEEDS + 1; refreshCartHud() end end)
+hudRide.Activated:Connect(function() if cart then setRiding(not cart.riding) end end)
+hudDel.Activated:Connect(function() removeCart("🚃 Вагонетка убрана") end)
 
-hudGo.Activated:Connect(function()
-	if cart then cart.running = not cart.running; refreshCartHud() end
-end)
-hudRev.Activated:Connect(function()
-	if cart then
-		cart.dir = -cart.dir
-		cart.speed = 0
-		cart.wait = 0
-		cart.rebase = true
-	end
-end)
-hudSpeed.Activated:Connect(function()
-	if cart then
-		cart.speedIdx = cart.speedIdx % #CART_SPEEDS + 1
-		refreshCartHud()
-	end
-end)
-hudRide.Activated:Connect(function()
-	if cart then setRiding(not cart.riding) end
-end)
-hudDel.Activated:Connect(function()
-	removeCart("🚃 Вагонетка убрана")
-end)
-
--- ===== Панель слотов =====
-local backdrop = make("TextButton", {
-	Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 1,
-	AutoButtonColor = false, Text = "", Visible = false, ZIndex = 5,
-}, root)
-local panel = make("Frame", {
-	AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
-	Size = UDim2.new(0, 400, 0.9, 0), BackgroundColor3 = C.panel, BorderSizePixel = 0, Active = true,
-}, backdrop)
-corner(panel, 18)
-stroke(panel, WHITE, 1, 0.85)
-make("UISizeConstraint", { MaxSize = Vector2.new(400, 470) }, panel)
-local panelScale = make("UIScale", {}, panel)
-
+-- Панель слотов
+local backdrop = make("TextButton", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 1, AutoButtonColor = false, Text = "", Visible = false, ZIndex = 5 }, root)
+local panel = make("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(0, 400, 0.9, 0), BackgroundColor3 = C.panel, BorderSizePixel = 0, Active = true }, backdrop)
+corner(panel, 18); stroke(panel, WHITE, 1, 0.85); make("UISizeConstraint", { MaxSize = Vector2.new(400, 470) }, panel); local panelScale = make("UIScale", {}, panel)
 label(panel, { Position = UDim2.fromOffset(18, 12), Size = UDim2.new(1, -80, 0, 26), Font = Enum.Font.GothamBold, TextSize = 21, TextXAlignment = Enum.TextXAlignment.Left, Text = "📁 Слоты строительства" })
-label(panel, { Position = UDim2.fromOffset(18, 39), Size = UDim2.new(1, -80, 0, 18), TextSize = 12, TextColor3 = C.sub, TextXAlignment = Enum.TextXAlignment.Left, Text = "Каждый слот — отдельная постройка. Нажми на слот, чтобы открыть." })
+label(panel, { Position = UDim2.fromOffset(18, 39), Size = UDim2.new(1, -80, 0, 18), TextSize = 12, TextColor3 = C.sub, TextXAlignment = Enum.TextXAlignment.Left, Text = "Каждый слот — отдельная постройка." })
 local closeBtn = button(panel, { AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -12, 0, 12), Size = UDim2.fromOffset(36, 36), Text = "✕", TextSize = 16 }, C.card)
-
-local list = make("ScrollingFrame", {
-	Position = UDim2.fromOffset(12, 70), Size = UDim2.new(1, -24, 1, -128),
-	BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 4,
-	ScrollBarImageColor3 = C.sub, CanvasSize = UDim2.new(),
-	AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y,
-}, panel)
+local list = make("ScrollingFrame", { Position = UDim2.fromOffset(12, 70), Size = UDim2.new(1, -24, 1, -128), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 4, ScrollBarImageColor3 = C.sub, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y }, panel)
 make("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }, list)
-local footer = label(panel, {
-	AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 18, 1, -10), Size = UDim2.new(1, -36, 0, 42),
-	TextSize = 12, TextColor3 = C.sub, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
-})
-
+local footer = label(panel, { AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 18, 1, -10), Size = UDim2.new(1, -36, 0, 42), TextSize = 12, TextColor3 = C.sub, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left })
 local cards = {}
 
 refreshSlots = function()
 	if not data then return end
 	for i, c in ipairs(cards) do
-		local active = (i == data.active)
-		local count = active and railCount or #data.slots[i].rails
+		local active = (i == data.active); local count = active and railCount or #data.slots[i].rails
 		c.name.Text = data.slots[i].name
 		local countText = (count == 0) and "Пусто" or objWord(count)
-		c.info.Text = active
-			and ('<font color="#50E18C"><b>● АКТИВНЫЙ</b></font>  ·  ' .. countText)
-			or (countText .. "  ·  нажми, чтобы открыть")
-		tween(c.stroke, 0.15, { Transparency = active and 0 or 1 })
-		setBase(c.card, active and Color3.fromRGB(34, 66, 56) or C.card)
-		c.badge.BackgroundColor3 = active and C.good or C.bg
-		c.badge.TextColor3 = active and C.bg or C.text
+		c.info.Text = active and ('<font color="#50E18C"><b>● АКТИВНЫЙ</b></font>  ·  ' .. countText) or (countText .. "  ·  нажми, чтобы открыть")
+		tween(c.stroke, 0.15, { Transparency = active and 0 or 1 }); setBase(c.card, active and Color3.fromRGB(34, 66, 56) or C.card)
+		c.badge.BackgroundColor3 = active and C.good or C.bg; c.badge.TextColor3 = active and C.bg or C.text
 	end
-	if saveState == "off" then
-		footer.Text = "⚠ Сохранение отключено: не найдены файловые функции (writefile/readfile). Слоты работают только в текущей сессии."
-		footer.TextColor3 = C.warn
-	elseif saveState == "saving" then
-		footer.Text = "● Сохраняю в локальный файл…"
-		footer.TextColor3 = C.warn
-	elseif saveState == "error" then
-		footer.Text = "⚠ Не удалось записать файл сохранения. Попробую снова при следующем изменении."
-		footer.TextColor3 = C.bad
-	else
-		footer.Text = "✓ Всё сохранено в локальный файл — постройки вернутся при следующем заходе."
-		footer.TextColor3 = C.good
-	end
+	if saveState == "off" then footer.Text = "⚠ Сохранение отключено (нет файловых функций)."; footer.TextColor3 = C.warn
+	elseif saveState == "saving" then footer.Text = "● Сохраняю в локальный файл…"; footer.TextColor3 = C.warn
+	elseif saveState == "error" then footer.Text = "⚠ Не удалось записать файл. Попробую снова."; footer.TextColor3 = C.bad
+	else footer.Text = "✓ Всё сохранено в локальный файл."; footer.TextColor3 = C.good end
 	refreshPill()
 end
 
 local function setSlotsOpen(on)
 	if on and Home.ui and Home.ui.isOpen then Home.ui.setOpen(false) end
-	slotsOpen = on
-	setActive(slotsBtn, on, C.accentDark)
+	slotsOpen = on; setActive(slotsBtn, on, C.accentDark)
 	if on then
-		refreshSlots()
-		backdrop.Visible = true
-		panelScale.Scale = 0.88
-		tween(backdrop, 0.2, { BackgroundTransparency = 0.45 })
-		tween(panelScale, 0.3, { Scale = 1 }, Enum.EasingStyle.Back)
+		refreshSlots(); backdrop.Visible = true; panelScale.Scale = 0.88
+		tween(backdrop, 0.2, { BackgroundTransparency = 0.45 }); tween(panelScale, 0.3, { Scale = 1 }, Enum.EasingStyle.Back)
 	else
-		local tw = tween(backdrop, 0.15, { BackgroundTransparency = 1 })
-		tween(panelScale, 0.15, { Scale = 0.92 })
-		tw.Completed:Once(function()
-			if not slotsOpen then backdrop.Visible = false end
-		end)
+		local tw = tween(backdrop, 0.15, { BackgroundTransparency = 1 }); tween(panelScale, 0.15, { Scale = 0.92 })
+		tw.Completed:Once(function() if not slotsOpen then backdrop.Visible = false end end)
 	end
 end
 
 local function switchSlot(i)
 	if busy or i == data.active then return end
-	busy = true
-	data.slots[data.active].rails = serialize()
-	clearRails()
-	data.active = i
-	refreshSlots()
-	loadRails(data.slots[i].rails)
-	busy = false
-	refreshSlots()
-	markDirty()
-	toast("📁 Открыт слот " .. i .. ": " .. data.slots[i].name, C.accent)
+	busy = true; data.slots[data.active].rails = serialize(); clearRails(); data.active = i; refreshSlots(); loadRails(data.slots[i].rails); busy = false; refreshSlots(); markDirty(); toast("📁 Открыт слот " .. i .. ": " .. data.slots[i].name, C.accent)
 end
 
 local function commitName(i, text)
-	local name = text:match("^%s*(.-)%s*$")
-	local len = utf8.len(name)
-	if len and len >= 1 and len <= 20 and name ~= data.slots[i].name then
-		data.slots[i].name = name
-		refreshSlots()
-		markDirty()
-		toast("✏️ Слот " .. i .. " переименован", C.good)
-	end
+	local name = text:match("^%s*(.-)%s*$"); local len = utf8.len(name)
+	if len and len >= 1 and len <= 20 and name ~= data.slots[i].name then data.slots[i].name = name; refreshSlots(); markDirty(); toast("✏️ Слот " .. i .. " переименован", C.good) end
 end
 
 local function buildSlotCards()
 	for i = 1, SLOT_COUNT do
-		local card = button(list, { Size = UDim2.new(1, -8, 0, 68), LayoutOrder = i }, C.card)
-		local st = stroke(card, C.good, 2, 1)
-		local badge = label(card, {
-			Position = UDim2.fromOffset(12, 15), Size = UDim2.fromOffset(38, 38),
-			BackgroundTransparency = 0, BackgroundColor3 = C.bg,
-			Font = Enum.Font.GothamBold, TextSize = 18, Text = tostring(i),
-		})
-		corner(badge, 19)
-		local nameL = label(card, {
-			Position = UDim2.fromOffset(62, 10), Size = UDim2.new(1, -160, 0, 24),
-			Font = Enum.Font.GothamBold, TextSize = 16,
-			TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
-		})
-		local info = label(card, {
-			Position = UDim2.fromOffset(62, 36), Size = UDim2.new(1, -160, 0, 20),
-			TextSize = 12, TextColor3 = C.sub, RichText = true, TextXAlignment = Enum.TextXAlignment.Left,
-		})
-		local box = make("TextBox", {
-			Position = nameL.Position, Size = nameL.Size, BackgroundColor3 = C.bg, TextColor3 = C.text,
-			Font = Enum.Font.GothamBold, TextSize = 15, ClearTextOnFocus = false,
-			PlaceholderText = "Название (до 20 символов)", TextXAlignment = Enum.TextXAlignment.Left,
-			Visible = false, BorderSizePixel = 0,
-		}, card)
-		corner(box, 8)
-		pad(box, 0, 8)
-
+		local card = button(list, { Size = UDim2.new(1, -8, 0, 68), LayoutOrder = i }, C.card); local st = stroke(card, C.good, 2, 1)
+		local badge = label(card, { Position = UDim2.fromOffset(12, 15), Size = UDim2.fromOffset(38, 38), BackgroundTransparency = 0, BackgroundColor3 = C.bg, Font = Enum.Font.GothamBold, TextSize = 18, Text = tostring(i) }); corner(badge, 19)
+		local nameL = label(card, { Position = UDim2.fromOffset(62, 10), Size = UDim2.new(1, -160, 0, 24), Font = Enum.Font.GothamBold, TextSize = 16, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd })
+		local info = label(card, { Position = UDim2.fromOffset(62, 36), Size = UDim2.new(1, -160, 0, 20), TextSize = 12, TextColor3 = C.sub, RichText = true, TextXAlignment = Enum.TextXAlignment.Left })
+		local box = make("TextBox", { Position = nameL.Position, Size = nameL.Size, BackgroundColor3 = C.bg, TextColor3 = C.text, Font = Enum.Font.GothamBold, TextSize = 15, ClearTextOnFocus = false, PlaceholderText = "Название", TextXAlignment = Enum.TextXAlignment.Left, Visible = false, BorderSizePixel = 0 }, card)
+		corner(box, 8); pad(box, 0, 8)
 		local edit = button(card, { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -52, 0.5, 0), Size = UDim2.fromOffset(34, 34), Text = "✏️", TextSize = 15 }, C.bg)
 		local trash = button(card, { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0), Size = UDim2.fromOffset(34, 34), Text = "🗑", TextSize = 15 }, C.bg)
-
-		card.Activated:Connect(function()
-			if not box.Visible then switchSlot(i) end
-		end)
-
-		edit.Activated:Connect(function()
-			nameL.Visible = false
-			box.Text = data.slots[i].name
-			box.Visible = true
-			box:CaptureFocus()
-		end)
-		box.FocusLost:Connect(function()
-			box.Visible = false
-			nameL.Visible = true
-			commitName(i, box.Text)
-		end)
-
+		card.Activated:Connect(function() if not box.Visible then switchSlot(i) end end)
+		edit.Activated:Connect(function() nameL.Visible = false; box.Text = data.slots[i].name; box.Visible = true; box:CaptureFocus() end)
+		box.FocusLost:Connect(function() box.Visible = false; nameL.Visible = true; commitName(i, box.Text) end)
 		local armed = false
-		local function disarm()
-			armed = false
-			trash.Text = "🗑"
-			setBase(trash, C.bg)
-		end
+		local function disarm() armed = false; trash.Text = "🗑"; setBase(trash, C.bg) end
 		trash.Activated:Connect(function()
 			if busy then return end
-			if not armed then
-				armed = true
-				trash.Text = "❓"
-				setBase(trash, C.badDark)
-				toast("Нажми ещё раз — слот " .. i .. " будет очищен", C.warn)
-				task.delay(2.5, function() if armed then disarm() end end)
-				return
-			end
-			disarm()
-			if i == data.active then clearRails()
-			else data.slots[i].rails = {} end
-			refreshSlots()
-			markDirty()
-			toast("🗑 Слот " .. i .. " очищен", C.bad)
+			if not armed then armed = true; trash.Text = "❓"; setBase(trash, C.badDark); toast("Нажми ещё раз — слот будет очищен", C.warn); task.delay(2.5, function() if armed then disarm() end end); return end
+			disarm(); if i == data.active then clearRails() else data.slots[i].rails = {} end; refreshSlots(); markDirty(); toast("🗑 Слот " .. i .. " очищен", C.bad)
 		end)
-
 		cards[i] = { card = card, stroke = st, badge = badge, name = nameL, info = info }
 	end
 end
 
--- ===== НПС: кнопка и окно обучения =====
-Home.npcBtn = dockButton(dock, "", "НПС", 3, 66)
-Decor.icon(Home.npcBtn, Home.NPC_IMAGE)
-Home.npcBtn.BackgroundTransparency = 1
-Home.npcBtn.Visible = false
-function Home.refreshNpcBtn()
-	Home.npcBtn.Visible = next(Home.doors) ~= nil and not buildMode
-end
+-- Панель НПС (Маршруты)
+Home.npcBtn = dockButton(dock, "", "НПС", 3, 66); Decor.icon(Home.npcBtn, Home.NPC_IMAGE); Home.npcBtn.BackgroundTransparency = 1; Home.npcBtn.Visible = false
+function Home.refreshNpcBtn() Home.npcBtn.Visible = next(Home.doors) ~= nil and not buildMode end
 
 Home.ui = { isOpen = false, cards = {} }
 do
 	local ui = Home.ui
-	ui.backdrop = make("TextButton", {
-		Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 1,
-		AutoButtonColor = false, Text = "", Visible = false, ZIndex = 5,
-	}, root)
-	local panel = make("Frame", {
-		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
-		Size = UDim2.new(0, 420, 0.9, 0), BackgroundColor3 = C.panel, BorderSizePixel = 0, Active = true,
-	}, ui.backdrop)
-	corner(panel, 18)
-	stroke(panel, WHITE, 1, 0.85)
-	make("UISizeConstraint", { MaxSize = Vector2.new(420, 480) }, panel)
-	ui.scale = make("UIScale", {}, panel)
-
-	make("ImageLabel", {
-		Position = UDim2.fromOffset(18, 12), Size = UDim2.fromOffset(30, 30), BackgroundTransparency = 1,
-		Image = Home.TITLE_IMAGE, ScaleType = Enum.ScaleType.Fit,
-	}, panel)
-	label(panel, {
-		Position = UDim2.fromOffset(56, 12), Size = UDim2.new(1, -170, 0, 30), Font = Enum.Font.GothamBold, TextSize = 22,
-		TextXAlignment = Enum.TextXAlignment.Left, Text = "НПС",
-	})
-	ui.closeBtn = button(panel, {
-		AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -14, 0, 12), Size = UDim2.fromOffset(86, 30),
-		Text = "Закрыть", TextSize = 13,
-	}, C.card)
-
-	local tab = make("Frame", {
-		Position = UDim2.fromOffset(18, 52), Size = UDim2.fromOffset(130, 28),
-		BackgroundColor3 = C.accentDark, BorderSizePixel = 0,
-	}, panel)
-	corner(tab, 14)
+	ui.backdrop = make("TextButton", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 1, AutoButtonColor = false, Text = "", Visible = false, ZIndex = 5 }, root)
+	local panel = make("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(0, 420, 0.9, 0), BackgroundColor3 = C.panel, BorderSizePixel = 0, Active = true }, ui.backdrop)
+	corner(panel, 18); stroke(panel, WHITE, 1, 0.85); make("UISizeConstraint", { MaxSize = Vector2.new(420, 480) }, panel); ui.scale = make("UIScale", {}, panel)
+	make("ImageLabel", { Position = UDim2.fromOffset(18, 12), Size = UDim2.fromOffset(30, 30), BackgroundTransparency = 1, Image = Home.TITLE_IMAGE, ScaleType = Enum.ScaleType.Fit }, panel)
+	label(panel, { Position = UDim2.fromOffset(56, 12), Size = UDim2.new(1, -170, 0, 30), Font = Enum.Font.GothamBold, TextSize = 22, TextXAlignment = Enum.TextXAlignment.Left, Text = "НПС" })
+	ui.closeBtn = button(panel, { AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -14, 0, 12), Size = UDim2.fromOffset(86, 30), Text = "Закрыть", TextSize = 13 }, C.card)
+	local tab = make("Frame", { Position = UDim2.fromOffset(18, 52), Size = UDim2.fromOffset(130, 28), BackgroundColor3 = C.accentDark, BorderSizePixel = 0 }, panel); corner(tab, 14)
 	label(tab, { Size = UDim2.fromScale(1, 1), Font = Enum.Font.GothamBold, TextSize = 13, Text = "Обучение" })
-	label(panel, {
-		Position = UDim2.fromOffset(18, 88), Size = UDim2.new(1, -36, 0, 34), TextSize = 12, TextColor3 = C.sub,
-		TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
-		Text = "Запомнить: пройди маршрут сам и нажми «Сохранить». Отправить: жители повторят его. Очистить: убрать маршрут из слота.",
-	})
-
-	local rlist = make("ScrollingFrame", {
-		Position = UDim2.fromOffset(12, 128), Size = UDim2.new(1, -24, 1, -176),
-		BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 4,
-		ScrollBarImageColor3 = C.sub, CanvasSize = UDim2.new(),
-		AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y,
-	}, panel)
+	label(panel, { Position = UDim2.fromOffset(18, 88), Size = UDim2.new(1, -36, 0, 34), TextSize = 12, TextColor3 = C.sub, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, Text = "Запомнить: пройди маршрут сам. Отправить: жители повторят его." })
+	local rlist = make("ScrollingFrame", { Position = UDim2.fromOffset(12, 128), Size = UDim2.new(1, -24, 1, -176), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 4, ScrollBarImageColor3 = C.sub, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y }, panel)
 	make("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }, rlist)
-	ui.footer = label(panel, {
-		AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 18, 1, -10), Size = UDim2.new(1, -36, 0, 32),
-		TextSize = 12, TextColor3 = C.sub, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
-	})
-
+	ui.footer = label(panel, { AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 18, 1, -10), Size = UDim2.new(1, -36, 0, 32), TextSize = 12, TextColor3 = C.sub, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left })
 	for i = 1, Home.ROUTE_SLOTS do
-		local card = button(rlist, { Size = UDim2.new(1, -8, 0, 100), LayoutOrder = i }, C.card)
-		local st = stroke(card, C.bad, 2, 1)
-		local badge = label(card, {
-			Position = UDim2.fromOffset(12, 10), Size = UDim2.fromOffset(36, 36),
-			BackgroundTransparency = 0, BackgroundColor3 = C.bg,
-			Font = Enum.Font.GothamBold, TextSize = 17, Text = tostring(i),
-		})
-		corner(badge, 18)
-		label(card, {
-			Position = UDim2.fromOffset(58, 9), Size = UDim2.new(1, -70, 0, 22), Font = Enum.Font.GothamBold, TextSize = 15,
-			TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = "Маршрут " .. i,
-		})
-		local info = label(card, {
-			Position = UDim2.fromOffset(58, 31), Size = UDim2.new(1, -70, 0, 18), TextSize = 12, TextColor3 = C.sub,
-			RichText = true, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
-		})
-		local row = make("Frame", {
-			Position = UDim2.fromOffset(12, 54), Size = UDim2.new(1, -24, 0, 36), BackgroundTransparency = 1,
-		}, card)
-		make("UIGridLayout", {
-			FillDirection = Enum.FillDirection.Horizontal, CellPadding = UDim2.fromOffset(8, 0),
-			CellSize = UDim2.new(1 / 3, -6, 1, 0), SortOrder = Enum.SortOrder.LayoutOrder,
-		}, row)
+		local card = button(rlist, { Size = UDim2.new(1, -8, 0, 100), LayoutOrder = i }, C.card); local st = stroke(card, C.bad, 2, 1)
+		local badge = label(card, { Position = UDim2.fromOffset(12, 10), Size = UDim2.fromOffset(36, 36), BackgroundTransparency = 0, BackgroundColor3 = C.bg, Font = Enum.Font.GothamBold, TextSize = 17, Text = tostring(i) }); corner(badge, 18)
+		label(card, { Position = UDim2.fromOffset(58, 9), Size = UDim2.new(1, -70, 0, 22), Font = Enum.Font.GothamBold, TextSize = 15, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = "Маршрут " .. i })
+		local info = label(card, { Position = UDim2.fromOffset(58, 31), Size = UDim2.new(1, -70, 0, 18), TextSize = 12, TextColor3 = C.sub, RichText = true, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd })
+		local row = make("Frame", { Position = UDim2.fromOffset(12, 54), Size = UDim2.new(1, -24, 0, 36), BackgroundTransparency = 1 }, card)
+		make("UIGridLayout", { FillDirection = Enum.FillDirection.Horizontal, CellPadding = UDim2.fromOffset(8, 0), CellSize = UDim2.new(1 / 3, -6, 1, 0), SortOrder = Enum.SortOrder.LayoutOrder }, row)
 		local rec = button(row, { LayoutOrder = 1, Text = "Запомнить", TextSize = 13 }, C.badDark)
 		local play = button(row, { LayoutOrder = 2, Text = "Отправить", TextSize = 13 }, C.goodDark)
 		local trash = button(row, { LayoutOrder = 3, Text = "Очистить", TextSize = 13 }, C.bg)
-		ui.cards[i] = {
-			card = card, stroke = st, badge = badge, info = info, rec = rec, play = play, trash = trash, armed = false,
-		}
+		ui.cards[i] = { card = card, stroke = st, badge = badge, info = info, rec = rec, play = play, trash = trash, armed = false }
 	end
-
 	function ui.refresh()
 		for i, c in ipairs(ui.cards) do
-			local r = Home.routes[i]
-			local n = r and #r.pts or 0
-			local has = n >= Home.ROUTE_MIN
-			local recording = Home.rec ~= nil and Home.rec.slot == i
-			if recording then
-				c.info.Text = '<font color="#FF6060"><b>Идёт запись…</b></font>'
-			elseif has then
-				c.info.Text = n .. " точек, " .. math.floor(Home.routeLength(r.pts)) .. " студов"
-			else
-				c.info.Text = "Пусто"
-			end
-			setBase(c.play, has and C.goodDark or C.bg)
-			c.play.TextColor3 = has and C.text or C.sub
-			setBase(c.trash, c.armed and C.badDark or C.bg)
-			c.trash.Text = c.armed and "Точно?" or "Очистить"
-			c.trash.TextColor3 = (has or c.armed) and C.text or C.sub
-			c.badge.BackgroundColor3 = has and C.good or C.bg
-			c.badge.TextColor3 = has and C.bg or C.text
+			local r = Home.routes[i]; local n = r and #r.pts or 0; local has = n >= Home.ROUTE_MIN; local recording = Home.rec ~= nil and Home.rec.slot == i
+			if recording then c.info.Text = '<font color="#FF6060"><b>Идёт запись…</b></font>'
+			elseif has then c.info.Text = n .. " точек, " .. math.floor(Home.routeLength(r.pts)) .. " студов"
+			else c.info.Text = "Пусто" end
+			setBase(c.play, has and C.goodDark or C.bg); c.play.TextColor3 = has and C.text or C.sub
+			setBase(c.trash, c.armed and C.badDark or C.bg); c.trash.Text = c.armed and "Точно?" or "Очистить"; c.trash.TextColor3 = (has or c.armed) and C.text or C.sub
+			c.badge.BackgroundColor3 = has and C.good or C.bg; c.badge.TextColor3 = has and C.bg or C.text
 			tween(c.stroke, 0.15, { Transparency = recording and 0 or 1 })
 		end
-		if saveState == "off" then
-			ui.footer.Text = "Сохранение отключено (нет файловых функций): маршруты работают только в текущей сессии."
-			ui.footer.TextColor3 = C.warn
-		else
-			ui.footer.Text = "Маршруты сохраняются в локальный файл вместе со слотом постройки."
-			ui.footer.TextColor3 = C.sub
-		end
+		if saveState == "off" then ui.footer.Text = "Сохранение отключено."; ui.footer.TextColor3 = C.warn
+		else ui.footer.Text = "Маршруты сохраняются вместе со слотом."; ui.footer.TextColor3 = C.sub end
 	end
-
 	function ui.setOpen(on)
-		ui.isOpen = on
-		setActive(Home.npcBtn, on, C.accentDark)
+		ui.isOpen = on; setActive(Home.npcBtn, on, C.accentDark)
 		if on then
 			if slotsOpen then setSlotsOpen(false) end
-			ui.refresh()
-			ui.backdrop.Visible = true
-			ui.scale.Scale = 0.88
-			tween(ui.backdrop, 0.2, { BackgroundTransparency = 0.45 })
-			tween(ui.scale, 0.3, { Scale = 1 }, Enum.EasingStyle.Back)
+			ui.refresh(); ui.backdrop.Visible = true; ui.scale.Scale = 0.88
+			tween(ui.backdrop, 0.2, { BackgroundTransparency = 0.45 }); tween(ui.scale, 0.3, { Scale = 1 }, Enum.EasingStyle.Back)
 		else
-			local tw = tween(ui.backdrop, 0.15, { BackgroundTransparency = 1 })
-			tween(ui.scale, 0.15, { Scale = 0.92 })
-			tw.Completed:Once(function()
-				if not ui.isOpen then ui.backdrop.Visible = false end
-			end)
+			local tw = tween(ui.backdrop, 0.15, { BackgroundTransparency = 1 }); tween(ui.scale, 0.15, { Scale = 0.92 })
+			tw.Completed:Once(function() if not ui.isOpen then ui.backdrop.Visible = false end end)
 		end
 	end
-
-	ui.hud = make("Frame", {
-		Position = UDim2.fromOffset(14, 10), Size = UDim2.fromOffset(240, 92),
-		BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false, ZIndex = 6,
-	}, root)
-	corner(ui.hud, 16)
-	stroke(ui.hud, C.bad, 2, 0.2)
-	label(ui.hud, {
-		Position = UDim2.fromOffset(14, 8), Size = UDim2.new(1, -28, 0, 20), Font = Enum.Font.GothamBold, TextSize = 14,
-		TextColor3 = C.bad, TextXAlignment = Enum.TextXAlignment.Left, Text = "ЗАПИСЬ МАРШРУТА",
-	})
-	ui.hudInfo = label(ui.hud, {
-		Position = UDim2.fromOffset(14, 30), Size = UDim2.new(1, -28, 0, 16), TextSize = 12, TextColor3 = C.sub,
-		TextXAlignment = Enum.TextXAlignment.Left,
-	})
-	local hrow = make("Frame", {
-		Position = UDim2.fromOffset(12, 52), Size = UDim2.new(1, -24, 0, 30), BackgroundTransparency = 1,
-	}, ui.hud)
-	make("UIGridLayout", {
-		FillDirection = Enum.FillDirection.Horizontal, CellPadding = UDim2.fromOffset(8, 0),
-		CellSize = UDim2.new(0.5, -4, 1, 0), SortOrder = Enum.SortOrder.LayoutOrder,
-	}, hrow)
+	ui.hud = make("Frame", { Position = UDim2.fromOffset(14, 10), Size = UDim2.fromOffset(240, 92), BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false, ZIndex = 6 }, root)
+	corner(ui.hud, 16); stroke(ui.hud, C.bad, 2, 0.2)
+	label(ui.hud, { Position = UDim2.fromOffset(14, 8), Size = UDim2.new(1, -28, 0, 20), Font = Enum.Font.GothamBold, TextSize = 14, TextColor3 = C.bad, TextXAlignment = Enum.TextXAlignment.Left, Text = "ЗАПИСЬ МАРШРУТА" })
+	ui.hudInfo = label(ui.hud, { Position = UDim2.fromOffset(14, 30), Size = UDim2.new(1, -28, 0, 16), TextSize = 12, TextColor3 = C.sub, TextXAlignment = Enum.TextXAlignment.Left })
+	local hrow = make("Frame", { Position = UDim2.fromOffset(12, 52), Size = UDim2.new(1, -24, 0, 30), BackgroundTransparency = 1 }, ui.hud)
+	make("UIGridLayout", { FillDirection = Enum.FillDirection.Horizontal, CellPadding = UDim2.fromOffset(8, 0), CellSize = UDim2.new(0.5, -4, 1, 0), SortOrder = Enum.SortOrder.LayoutOrder }, hrow)
 	ui.recSave = button(hrow, { LayoutOrder = 1, Text = "Сохранить", TextSize = 13 }, C.goodDark)
 	ui.recCancel = button(hrow, { LayoutOrder = 2, Text = "Отмена", TextSize = 13 }, C.badDark)
-	function ui.updateRec()
-		local rec = Home.rec
-		if rec then
-			ui.hudInfo.Text = "Слот " .. rec.slot .. ": " .. #rec.pts .. " точек, " .. math.floor(rec.length) .. " студов"
-		end
-	end
-	function ui.showRec(on)
-		ui.hud.Visible = on
-		if on then ui.updateRec() end
-	end
+	function ui.updateRec() local rec = Home.rec; if rec then ui.hudInfo.Text = "Слот " .. rec.slot .. ": " .. #rec.pts .. " точек, " .. math.floor(rec.length) .. " студов" end end
+	function ui.showRec(on) ui.hud.Visible = on; if on then ui.updateRec() end end
 	ui.refresh()
 end
 
@@ -3679,19 +3216,9 @@ closeBtn.Activated:Connect(function() setSlotsOpen(false) end)
 backdrop.Activated:Connect(function() setSlotsOpen(false) end)
 
 -- ===== Призрак, действия =====
-function Decor.railTool(t)
-	return t == "straight" or t == "curve" or t == "ramp" or t == "sign" or t == "loop"
-end
-
-local function isPlacing(t)
-	return Decor.railTool(t) or t == "decor"
-end
-
-local function isHoldTool(t)
-	if t == "erase" then return true end
-	return (not FM.on) and (t == "straight" or t == "curve" or t == "ramp")
-end
-
+function Decor.railTool(t) return t == "straight" or t == "curve" or t == "ramp" or t == "sign" or t == "loop" end
+local function isPlacing(t) return Decor.railTool(t) or t == "decor" end
+local function isHoldTool(t) if t == "erase" then return true end return (not FM.on) and (t == "straight" or t == "curve" or t == "ramp") end
 local function hintFor(t)
 	if t == "decor" then return HINTS.decor end
 	if FM.on and isPlacing(t) then return HINTS.free[t] or HINTS.free.place end
@@ -3701,98 +3228,62 @@ end
 local function destroyGhost()
 	if ghost then ghost:Destroy() end
 	ghost, ghostKind, ghostHL, ghostShown, ghostCF = nil, nil, nil, nil, nil
-	Decor.ghostKey = nil
-	FUI.mark.Parent = nil
-	FM.snapped = false
+	Decor.ghostKey = nil; FUI.mark.Parent = nil; FM.snapped = false
 end
 
 local function createGhost(kind)
 	destroyGhost()
-	if kind == "decor" then
-		ghost = Decor.newModel(Decor.key, "Ghost")
-		Decor.ghostKey = Decor.key
-	else
-		ghost = newRailModel(kind, "Ghost")
-	end
-	ghostKind = kind
-	if kind == "sign" then setSignText(ghost, signText) end
+	if kind == "decor" then ghost = Decor.newModel(Decor.key, "Ghost"); Decor.ghostKey = Decor.key
+	else ghost = newRailModel(kind, "Ghost") end
+	ghostKind = kind; if kind == "sign" then setSignText(ghost, signText) end
 	for _, d in ipairs(ghost:GetDescendants()) do
-		if d:IsA("BasePart") then
-			d.CanCollide = false
-			d.CanQuery = false
-			d.CanTouch = false
-			if d.Name ~= "Origin" then d.Transparency = 0.35 end
-		elseif d:IsA("TextLabel") then
-			d.TextTransparency = 0.3
-		end
+		if d:IsA("BasePart") then d.CanCollide = false; d.CanQuery = false; d.CanTouch = false; if d.Name ~= "Origin" then d.Transparency = 0.35 end
+		elseif d:IsA("TextLabel") then d.TextTransparency = 0.3 end
 	end
-	ghostHL = make("Highlight", {
-		OutlineColor = WHITE, FillColor = C.good, DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
-	}, ghost)
+	ghostHL = make("Highlight", { OutlineColor = WHITE, FillColor = C.good, DepthMode = Enum.HighlightDepthMode.AlwaysOnTop }, ghost)
 end
 
 local function getRay()
-	if lastInputTouch then
-		if not touchPos then return nil end
-		return camera:ScreenPointToRay(touchPos.X, touchPos.Y)
-	end
-	local m = UserInputService:GetMouseLocation()
-	return camera:ViewportPointToRay(m.X, m.Y)
+	if lastInputTouch then if not touchPos then return nil end return camera:ScreenPointToRay(touchPos.X, touchPos.Y) end
+	local m = UserInputService:GetMouseLocation(); return camera:ViewportPointToRay(m.X, m.Y)
 end
 
 function Geo.endpointOpen(ep)
-	for _, o in ipairs(eps) do
-		if o.info ~= ep.info and (o.pos - ep.pos).Magnitude < 0.8 then return false end
-	end
+	for _, o in ipairs(eps) do if o.info ~= ep.info and (o.pos - ep.pos).Magnitude < 0.8 then return false end end
 	return true
 end
 
 function Geo.findMagnet(ray)
 	local best, bestD
 	for _, ep in ipairs(eps) do
-		local v = ep.pos - ray.Origin
-		local t = v:Dot(ray.Direction)
+		local v = ep.pos - ray.Origin; local t = v:Dot(ray.Direction)
 		if t > 1 and t < 250 then
 			local d = (v - ray.Direction * t).Magnitude
-			if d < FCFG.MAGNET + t * 0.015 and (not bestD or d < bestD) and Geo.endpointOpen(ep) then
-				best, bestD = ep, d
-			end
+			if d < FCFG.MAGNET + t * 0.015 and (not bestD or d < bestD) and Geo.endpointOpen(ep) then best, bestD = ep, d end
 		end
 	end
 	return best
 end
 
 function Geo.attachCF(kind, ep)
-	local lf = Geo.localFrames(kind)
-	local rel = Geo.oriCF(FM.rel.yaw, FM.rel.pitch, FM.rel.roll)
-	if FM.flip then
-		return Geo.frameCF(ep.pos, -ep.dir, ep.up) * rel * lf.e:Inverse()
-	end
+	local lf = Geo.localFrames(kind); local rel = Geo.oriCF(FM.rel.yaw, FM.rel.pitch, FM.rel.roll)
+	if FM.flip then return Geo.frameCF(ep.pos, -ep.dir, ep.up) * rel * lf.e:Inverse() end
 	return Geo.frameCF(ep.pos, ep.dir, ep.up) * rel * lf.s:Inverse()
 end
 
 function Geo.isDuplicate(kind, cf)
 	for _, info in pairs(pieces) do
-		if info.kind == kind
-			and (info.cf.Position - cf.Position).Magnitude < 0.3
-			and info.cf.LookVector:Dot(cf.LookVector) > 0.98
-			and info.cf.UpVector:Dot(cf.UpVector) > 0.98 then
-			return true
-		end
+		if info.kind == kind and (info.cf.Position - cf.Position).Magnitude < 0.3 and info.cf.LookVector:Dot(cf.LookVector) > 0.98 and info.cf.UpVector:Dot(cf.UpVector) > 0.98 then return true end
 	end
 	return false
 end
 
 local function updateGhost(dt)
-	local ray = getRay()
-	if not ray then return end
-	local isDecor = ghostKind == "decor"
-	local gs = isDecor and Decor.GRID or (FM.on and FCFG.GRID or GRID)
+	local ray = getRay(); if not ray then return end
+	local isDecor = ghostKind == "decor"; local gs = isDecor and Decor.GRID or (FM.on and FCFG.GRID or GRID)
 	local pos
 	if level == 0 then
-		local filter = { ghost }
-		if not isDecor then table.insert(filter, railsFolder) end
-		if player.Character then table.insert(filter, player.Character) end
+		local filter = { ghost }; if not isDecor then table.insert(filter, railsFolder) end; if player.Character then table.insert(filter, player.Character) end
 		rayParams.FilterDescendantsInstances = filter
 		local hit = workspace:Raycast(ray.Origin, ray.Direction * 600, rayParams)
 		if hit then
@@ -3805,18 +3296,12 @@ local function updateGhost(dt)
 		local dy = ray.Direction.Y
 		if math.abs(dy) > 1e-4 then
 			local t = (py - ray.Origin.Y) / dy
-			if t > 0 and t < 400 then
-				local h = ray.Origin + ray.Direction * t
-				pos = Vector3.new(math.round(h.X / gs) * gs, py, math.round(h.Z / gs) * gs)
-			end
+			if t > 0 and t < 400 then local h = ray.Origin + ray.Direction * t; pos = Vector3.new(math.round(h.X / gs) * gs, py, math.round(h.Z / gs) * gs) end
 		end
 	end
 	local tcf, valid, snapEp
 	if isDecor then
-		if pos then
-			tcf = CFrame.new(pos) * CFrame.Angles(0, math.rad(rotTarget), 0)
-			valid = railCount < MAX_RAILS
-		end
+		if pos then tcf = CFrame.new(pos) * CFrame.Angles(0, math.rad(rotTarget), 0); valid = railCount < MAX_RAILS end
 	elseif FM.on then
 		if FM.magnet and ghostKind ~= "sign" then snapEp = Geo.findMagnet(ray) end
 		if snapEp then tcf = Geo.attachCF(ghostKind, snapEp)
@@ -3827,104 +3312,54 @@ local function updateGhost(dt)
 		valid = (railCount < MAX_RAILS) and not tileAt[cellKey(pos.X, pos.Z)]
 	end
 	local snapped = snapEp ~= nil
-	if snapped ~= FM.snapped then
-		FM.snapped = snapped
-		refreshFreeButtons()
-	end
-	if not tcf then
-		ghost.Parent = nil
-		ghostCF, ghostShown = nil, nil
-		FUI.mark.Parent = nil
-		return
-	end
-	ghostCF = tcf
-	ghostValid = valid
+	if snapped ~= FM.snapped then FM.snapped = snapped; refreshFreeButtons() end
+	if not tcf then ghost.Parent = nil; ghostCF, ghostShown = nil, nil; FUI.mark.Parent = nil; return end
+	ghostCF = tcf; ghostValid = valid
 	ghostShown = ghostShown and ghostShown:Lerp(tcf, 1 - math.exp(-dt * 20)) or tcf
 	local bob = 0.1 + math.sin(os.clock() * 4) * 0.06
-	ghost.Parent = camera
-	ghost:PivotTo(CFrame.new(0, bob, 0) * ghostShown)
+	ghost.Parent = camera; ghost:PivotTo(CFrame.new(0, bob, 0) * ghostShown)
 	ghostHL.FillColor = (not ghostValid) and C.bad or (snapped and C.accent or C.good)
 	ghostHL.FillTransparency = 0.5 + math.sin(os.clock() * 6) * 0.15
 	if snapEp then
-		local sz = 1.1 + math.sin(os.clock() * 8) * 0.15
-		FUI.mark.Size = Vector3.new(sz, sz, sz)
-		FUI.mark.Position = snapEp.pos + snapEp.up * 0.7
-		FUI.mark.Parent = camera
-	else
-		FUI.mark.Parent = nil
-	end
+		local sz = 1.1 + math.sin(os.clock() * 8) * 0.15; FUI.mark.Size = Vector3.new(sz, sz, sz); FUI.mark.Position = snapEp.pos + snapEp.up * 0.7; FUI.mark.Parent = camera
+	else FUI.mark.Parent = nil end
 end
 
 local function updateHover()
-	local rail
-	local ray = getRay()
+	local rail; local ray = getRay()
 	if ray then
 		local hit = workspace:Raycast(ray.Origin, ray.Direction * 600, hoverParams)
-		if hit then
-			local m = hit.Instance:FindFirstAncestorOfClass("Model")
-			if m and m.Parent == railsFolder then rail = m end
-		end
+		if hit then local m = hit.Instance:FindFirstAncestorOfClass("Model"); if m and m.Parent == railsFolder then rail = m end end
 	end
 	if rail then
-		local kind = rail:GetAttribute("Kind")
-		local isSign = kind == "sign"
+		local kind = rail:GetAttribute("Kind"); local isSign = kind == "sign"
 		if (tool == "edit" and not isSign) or (tool == "cart" and (isSign or kind == "decor")) then rail = nil end
 	end
-	if rail ~= hoverRail then
-		hoverRail = rail
-		hoverHL.Parent = rail
-	end
+	if rail ~= hoverRail then hoverRail = rail; hoverHL.Parent = rail end
 	hoverHL.FillColor = (tool == "erase") and C.bad or ((tool == "edit") and C.good or C.warn)
 	hoverHL.FillTransparency = 0.4 + math.sin(os.clock() * 8) * 0.15
 end
 
-local function onRailsChanged()
-	if slotsOpen then refreshSlots() end
-end
+local function onRailsChanged() if slotsOpen then refreshSlots() end end
 
 local function doAction(fromHold)
 	if not buildMode or busy then return end
 	if tool == "erase" then
 		if not hoverRail then return end
-		local r = hoverRail
-		hoverRail = nil
-		hoverHL.Parent = nil
-		removeRail(r)
-		markDirty()
-		onRailsChanged()
-	elseif tool == "cart" then
-		if fromHold or not hoverRail then return end
-		spawnCart(hoverRail)
+		local r = hoverRail; hoverRail = nil; hoverHL.Parent = nil; removeRail(r); markDirty(); onRailsChanged()
+	elseif tool == "cart" then if fromHold or not hoverRail then return end; spawnCart(hoverRail)
 	elseif tool == "edit" then
 		if fromHold or not hoverRail then return end
-		setSignText(hoverRail, finalSignText(signText))
-		flashRail(hoverRail, C.warn)
-		markDirty()
-		toast("✏️ Текст таблички обновлён", C.good)
+		setSignText(hoverRail, finalSignText(signText)); flashRail(hoverRail, C.warn); markDirty(); toast("✏️ Текст таблички обновлён", C.good)
 	else
 		if fromHold and (tool == "sign" or FM.on) then return end
-		if railCount >= MAX_RAILS then
-			if os.clock() - lastLimitToast > 2 then
-				lastLimitToast = os.clock()
-				toast("Лимит объектов в слоте: " .. MAX_RAILS, C.bad)
-			end
-			return
-		end
+		if railCount >= MAX_RAILS then if os.clock() - lastLimitToast > 2 then lastLimitToast = os.clock(); toast("Лимит объектов в слоте: " .. MAX_RAILS, C.bad) end; return end
 		if not ghostCF or not ghostValid then return end
 		local txt = finalSignText(signText)
-		if tool == "decor" then
-			local x, y, z, yaw = Geo.decompose(ghostCF)
-			spawnPiece("decor", round2(x), round2(y), round2(z), round2(yaw), 0, 0, true, true, nil, Decor.key)
-		elseif FM.on then
-			local x, y, z, yaw, pitch, roll = Geo.decompose(ghostCF)
-			spawnPiece(tool, round2(x), round2(y), round2(z), round2(yaw), round2(pitch), round2(roll), true, true, txt)
-		else
-			local p = ghostCF.Position
-			spawnPiece(tool, p.X, round2(p.Y), p.Z, FM.flatYaw(rotTarget), 0, 0, false, true, txt)
-		end
-		ghostValid = false
-		markDirty()
-		onRailsChanged()
+		if tool == "decor" then local x, y, z, yaw = Geo.decompose(ghostCF); spawnPiece("decor", round2(x), round2(y), round2(z), round2(yaw), 0, 0, true, true, nil, Decor.key)
+		elseif FM.on then local x, y, z, yaw, pitch, roll = Geo.decompose(ghostCF); spawnPiece(tool, round2(x), round2(y), round2(z), round2(yaw), round2(pitch), round2(roll), true, true, txt)
+		else local p = ghostCF.Position; spawnPiece(tool, p.X, round2(p.Y), p.Z, FM.flatYaw(rotTarget), 0, 0, false, true, txt) end
+		ghostValid = false; markDirty(); onRailsChanged()
 	end
 end
 
@@ -3935,331 +3370,171 @@ local function rotate(dir)
 	else rotTarget += FM.stepAngle() * dir end
 end
 
-function FM.tilt(which, dir)
-	if not FM.on or tool == "decor" then return end
-	local o = FM.snapped and FM.rel or FM
-	o[which] = FM.wrap(o[which] + FM.stepAngle() * dir)
-	refreshFreeButtons()
-end
+function FM.tilt(which, dir) if not FM.on or tool == "decor" then return end; local o = FM.snapped and FM.rel or FM; o[which] = FM.wrap(o[which] + FM.stepAngle() * dir); refreshFreeButtons() end
+function FM.toggleMagnet() FM.magnet = not FM.magnet; refreshFreeButtons(); toast(FM.magnet and "🧲 Магнит включён" or "🧲 Магнит выключен", FM.magnet and C.good or C.sub) end
+function FM.cycleStep() FM.angle = FM.angle % #FCFG.ANGLES + 1; refreshFreeButtons() end
 
-function FM.toggleMagnet()
-	FM.magnet = not FM.magnet
-	refreshFreeButtons()
-	toast(FM.magnet and "🧲 Магнит включён" or "🧲 Магнит выключен", FM.magnet and C.good or C.sub)
-end
-
-function FM.cycleStep()
-	FM.angle = FM.angle % #FCFG.ANGLES + 1
-	refreshFreeButtons()
-end
-
-local function setLevel(n)
-	n = math.clamp(n, 0, FM.on and FCFG.MAX_LEVEL or MAX_LEVEL)
-	if n == level then return end
-	level = n
-	hLabel.Text = tostring(level)
-end
-
+local function setLevel(n) n = math.clamp(n, 0, FM.on and FCFG.MAX_LEVEL or MAX_LEVEL); if n == level then return end; level = n; hLabel.Text = tostring(level) end
 local function sampleRefY()
-	local char = player.Character
-	local rootPart = char and char:FindFirstChild("HumanoidRootPart")
-	if not rootPart then return end
-	local params = RaycastParams.new()
-	params.FilterType = Enum.RaycastFilterType.Exclude
-	params.FilterDescendantsInstances = { char, railsFolder }
-	local hit = workspace:Raycast(rootPart.Position, Vector3.new(0, -60, 0), params)
-	if hit then refY = hit.Position.Y end
+	local char = player.Character; local rootPart = char and char:FindFirstChild("HumanoidRootPart"); if not rootPart then return end
+	local params = RaycastParams.new(); params.FilterType = Enum.RaycastFilterType.Exclude; params.FilterDescendantsInstances = { char, railsFolder }
+	local hit = workspace:Raycast(rootPart.Position, Vector3.new(0, -60, 0), params); if hit then refY = hit.Position.Y end
 end
 
 local function setTool(t)
 	if t == "loop" and not FM.on then t = "straight" end
-	tool = t
-	hoverRail = nil
-	hoverHL.Parent = nil
-	holding = false
+	tool = t; hoverRail = nil; hoverHL.Parent = nil; holding = false
 	for name, b in pairs(toolBtns) do setActive(b, name == t) end
-	local placing = isPlacing(t)
-	rotateBtn.Visible = placing
-	hpanel.Visible = placing
-	signPanel.Visible = (t == "sign" or t == "edit")
+	local placing = isPlacing(t); rotateBtn.Visible = placing; hpanel.Visible = placing; signPanel.Visible = (t == "sign" or t == "edit")
 	for _, b in ipairs(FUI.only) do b.Visible = placing and t ~= "decor" end
-	if placing then
-		if ghostKind ~= t or (t == "decor" and Decor.ghostKey ~= Decor.key) then createGhost(t) end
+	if placing then if ghostKind ~= t or (t == "decor" and Decor.ghostKey ~= Decor.key) then createGhost(t) end
 	else destroyGhost() end
-	local act = ACTIONS[t]
-	actionIcon.Text = act[1]
-	actionLbl.Text = act[2]
-	Decor.placeImg.Visible = act[3] == true
-	actionIcon.Visible = act[3] ~= true
-	hint.Text = hintFor(t)
+	local act = ACTIONS[t]; actionIcon.Text = act[1]; actionLbl.Text = act[2]; Decor.placeImg.Visible = act[3] == true; actionIcon.Visible = act[3] ~= true; hint.Text = hintFor(t)
 end
 
 local function setFreeMode(on)
 	if on == FM.on then return end
-	local oldStep = FM.levelStep()
-	FM.on = on
-	level = math.clamp(math.round(level * oldStep / FM.levelStep()), 0, on and FCFG.MAX_LEVEL or MAX_LEVEL)
-	hLabel.Text = tostring(level)
-	FM.resetAngles()
-	if not on then rotTarget = FM.flatYaw(rotTarget) end
-	destroyGhost()
-	ghostValid = false
-	FUI.refreshSwitch(true)
-	refreshFreeButtons()
-	FUI.dock.Visible = buildMode and on and not Decor.open
-	layoutBottom()
-	if buildMode then setTool(tool) end
+	local oldStep = FM.levelStep(); FM.on = on
+	level = math.clamp(math.round(level * oldStep / FM.levelStep()), 0, on and FCFG.MAX_LEVEL or MAX_LEVEL); hLabel.Text = tostring(level)
+	FM.resetAngles(); if not on then rotTarget = FM.flatYaw(rotTarget) end
+	destroyGhost(); ghostValid = false; FUI.refreshSwitch(true); refreshFreeButtons()
+	FUI.dock.Visible = buildMode and on and not Decor.open; layoutBottom(); if buildMode then setTool(tool) end
 	toast(on and "🔓 Свободный режим: рельсы без правил" or "🔒 Обычный режим: рельсы по сетке", on and C.good or C.sub)
 end
 
 function Decor.setOpen(on)
 	if on == Decor.open then return end
-	Decor.open = on
-	dock.Visible = not on
-	Decor.dock.Visible = on
+	Decor.open = on; dock.Visible = not on; Decor.dock.Visible = on
 	if on then
-		setSlotsOpen(false)
-		if Home.ui and Home.ui.isOpen then Home.ui.setOpen(false) end
-		Decor.dock.Position = UDim2.new(0.5, 0, 1, 140)
-		tween(Decor.dock, 0.4, { Position = UDim2.new(0.5, 0, 1, -14) }, Enum.EasingStyle.Back)
-		FUI.card.Visible = false
-		FUI.dock.Visible = false
-		Decor.select(Decor.key)
+		setSlotsOpen(false); if Home.ui and Home.ui.isOpen then Home.ui.setOpen(false) end
+		Decor.dock.Position = UDim2.new(0.5, 0, 1, 140); tween(Decor.dock, 0.4, { Position = UDim2.new(0.5, 0, 1, -14) }, Enum.EasingStyle.Back)
+		FUI.card.Visible = false; FUI.dock.Visible = false; Decor.select(Decor.key)
 	else
-		dock.Position = UDim2.new(0.5, 0, 1, 90)
-		tween(dock, 0.4, { Position = UDim2.new(0.5, 0, 1, -14) }, Enum.EasingStyle.Back)
-		FUI.card.Visible = buildMode
-		FUI.dock.Visible = buildMode and FM.on
-		if tool == "decor" then setTool("straight") end
+		dock.Position = UDim2.new(0.5, 0, 1, 90); tween(dock, 0.4, { Position = UDim2.new(0.5, 0, 1, -14) }, Enum.EasingStyle.Back)
+		FUI.card.Visible = buildMode; FUI.dock.Visible = buildMode and FM.on; if tool == "decor" then setTool("straight") end
 	end
 	layoutBottom()
 end
 
 function Decor.select(key)
-	Decor.key = key
-	if Decor.turnStep() == 90 then rotTarget = FM.flatYaw(rotTarget) end
+	Decor.key = key; if Decor.turnStep() == 90 then rotTarget = FM.flatYaw(rotTarget) end
 	for k, b in pairs(Decor.cards) do setActive(b, k == key, C.accentDark) end
 	if Decor.open then setTool("decor") end
 end
 
 local function setBuildMode(on)
-	if on and Home.rec then
-		toast("Сначала сохрани или отмени запись маршрута", C.warn)
-		return
-	end
+	if on and Home.rec then toast("Сначала сохрани или отмени запись маршрута", C.warn); return end
 	if not on then Decor.setOpen(false) end
-	buildMode = on
-	Home.setBuild(on)
-	Home.refreshNpcBtn()
-	allHL.Enabled = on
-	tools.Visible = on
-	divider.Visible = on
-	hint.Visible = on
-	FUI.dock.Visible = on and FM.on
-	if on then
-		FUI.card.Position = UDim2.fromOffset(-250, 10)
-		FUI.card.Visible = true
-		tween(FUI.card, 0.4, { Position = UDim2.fromOffset(14, 10) }, Enum.EasingStyle.Back)
-	else
-		FUI.card.Visible = false
-	end
-	layoutBottom()
-	buildIcon.Text = on and "✖" or "🚂"
-	buildLbl.Text = on and "Выйти" or "Строить"
-	setBase(buildBtn, on and C.badDark or C.goodDark)
-	if on then
-		sampleRefY()
-		setTool(tool)
-	else
-		holding = false
-		hoverRail = nil
-		hoverHL.Parent = nil
-		hpanel.Visible = false
-		signPanel.Visible = false
-		destroyGhost()
-	end
+	buildMode = on; Home.setBuild(on); Home.refreshNpcBtn(); allHL.Enabled = on; tools.Visible = on; divider.Visible = on; hint.Visible = on; FUI.dock.Visible = on and FM.on
+	if on then FUI.card.Position = UDim2.fromOffset(-250, 10); FUI.card.Visible = true; tween(FUI.card, 0.4, { Position = UDim2.fromOffset(14, 10) }, Enum.EasingStyle.Back)
+	else FUI.card.Visible = false end
+	layoutBottom(); buildIcon.Text = on and "✖" or "🚂"; buildLbl.Text = on and "Выйти" or "Строить"; setBase(buildBtn, on and C.badDark or C.goodDark)
+	if on then sampleRefY(); setTool(tool)
+	else holding = false; hoverRail = nil; hoverHL.Parent = nil; hpanel.Visible = false; signPanel.Visible = false; destroyGhost() end
 end
 
 buildBtn.Activated:Connect(function() setBuildMode(not buildMode) end)
-for name, b in pairs(toolBtns) do
-	b.Activated:Connect(function() setTool(name) end)
-end
+for name, b in pairs(toolBtns) do b.Activated:Connect(function() setTool(name) end) end
 rotateBtn.Activated:Connect(function() rotate(1) end)
 actionBtn.Activated:Connect(function() doAction(false) end)
 hUp.Activated:Connect(function() setLevel(level + 1) end)
 hDown.Activated:Connect(function() setLevel(level - 1) end)
 hReset.Activated:Connect(function() setLevel(0) end)
-
 FUI.track.Activated:Connect(function() setFreeMode(not FM.on) end)
 FUI.pitch.Activated:Connect(function() FM.tilt("pitch", 1) end)
 FUI.roll.Activated:Connect(function() FM.tilt("roll", 1) end)
 FUI.side.Activated:Connect(function() FM.flip = not FM.flip; refreshFreeButtons() end)
 FUI.magnet.Activated:Connect(function() FM.toggleMagnet() end)
 FUI.step.Activated:Connect(function() FM.cycleStep() end)
-
-Decor.btn.Activated:Connect(function()
-	if buildMode then Decor.setOpen(true) end
-end)
+Decor.btn.Activated:Connect(function() if buildMode then Decor.setOpen(true) end end)
 Decor.backBtn.Activated:Connect(function() Decor.setOpen(false) end)
-function Decor.scrollBy(dx)
-	local sf = Decor.scroll
-	tween(sf, 0.25, { CanvasPosition = Vector2.new(math.max(0, sf.CanvasPosition.X + dx), 0) })
-end
+function Decor.scrollBy(dx) local sf = Decor.scroll; tween(sf, 0.25, { CanvasPosition = Vector2.new(math.max(0, sf.CanvasPosition.X + dx), 0) }) end
 Decor.prevBtn.Activated:Connect(function() Decor.scrollBy(-282) end)
 Decor.nextBtn.Activated:Connect(function() Decor.scrollBy(282) end)
 Decor.rotateBtn.Activated:Connect(function() rotate(1) end)
 Decor.actionBtn.Activated:Connect(function() doAction(false) end)
-for key, card in pairs(Decor.cards) do
-	card.Activated:Connect(function() Decor.select(key) end)
-end
+for key, card in pairs(Decor.cards) do card.Activated:Connect(function() Decor.select(key) end) end
 
 Home.npcBtn.Activated:Connect(function() Home.ui.setOpen(not Home.ui.isOpen) end)
 Home.ui.closeBtn.Activated:Connect(function() Home.ui.setOpen(false) end)
 Home.ui.backdrop.Activated:Connect(function() Home.ui.setOpen(false) end)
 for i, c in ipairs(Home.ui.cards) do
 	c.rec.Activated:Connect(function()
-		if Home.rec then
-			toast("Сначала сохрани или отмени текущую запись", C.warn)
-			return
-		end
-		Home.ui.setOpen(false)
-		if buildMode then setBuildMode(false) end
-		Home.startRecord(i)
+		if Home.rec then toast("Сначала сохрани или отмени текущую запись", C.warn); return end
+		Home.ui.setOpen(false); if buildMode then setBuildMode(false) end; Home.startRecord(i)
 	end)
 	c.play.Activated:Connect(function() Home.sendRoute(i) end)
 	c.trash.Activated:Connect(function()
 		if (Home.rec and Home.rec.slot == i) or #Home.routes[i].pts == 0 then return end
 		if not c.armed then
-			c.armed = true
-			Home.ui.refresh()
-			toast("Нажми ещё раз: маршрут " .. i .. " будет очищен", C.warn)
-			task.delay(2.5, function()
-				if c.armed then c.armed = false; Home.ui.refresh() end
-			end)
-			return
+			c.armed = true; Home.ui.refresh(); toast("Нажми ещё раз: маршрут " .. i .. " будет очищен", C.warn)
+			task.delay(2.5, function() if c.armed then c.armed = false; Home.ui.refresh() end end); return
 		end
-		c.armed = false
-		Home.routes[i] = { name = "Маршрут " .. i, pts = {} }
-		Home.ui.refresh()
-		markDirty()
-		toast("Маршрут " .. i .. " очищен", C.bad)
+		c.armed = false; Home.routes[i] = { name = "Маршрут " .. i, pts = {} }; Home.ui.refresh(); markDirty(); toast("Маршрут " .. i .. " очищен", C.bad)
 	end)
 end
-Home.ui.recSave.Activated:Connect(function()
-	if Home.stopRecord(true) then markDirty() end
-end)
-Home.ui.recCancel.Activated:Connect(function()
-	Home.stopRecord(false)
-	toast("Запись отменена", C.sub)
-end)
+Home.ui.recSave.Activated:Connect(function() if Home.stopRecord(true) then markDirty() end end)
+Home.ui.recCancel.Activated:Connect(function() Home.stopRecord(false); toast("Запись отменена", C.sub) end)
 
--- ===== Ввод =====
+-- Ввод
 local TOOL_KEYS = {
-	[Enum.KeyCode.One] = "straight",
-	[Enum.KeyCode.Two] = "curve",
-	[Enum.KeyCode.Three] = "ramp",
-	[Enum.KeyCode.Four] = "erase",
-	[Enum.KeyCode.Five] = "cart",
-	[Enum.KeyCode.Six] = "sign",
-	[Enum.KeyCode.Seven] = "edit",
-	[Enum.KeyCode.Eight] = "loop",
+	[Enum.KeyCode.One] = "straight", [Enum.KeyCode.Two] = "curve", [Enum.KeyCode.Three] = "ramp",
+	[Enum.KeyCode.Four] = "erase", [Enum.KeyCode.Five] = "cart", [Enum.KeyCode.Six] = "sign",
+	[Enum.KeyCode.Seven] = "edit", [Enum.KeyCode.Eight] = "loop",
 }
 
-UserInputService.LastInputTypeChanged:Connect(function(t)
-	lastInputTouch = (t == Enum.UserInputType.Touch)
-end)
+UserInputService.LastInputTypeChanged:Connect(function(t) lastInputTouch = (t == Enum.UserInputType.Touch) end)
 
 UserInputService.InputBegan:Connect(function(input, processed)
 	if processed then return end
-	local t = input.UserInputType
-	local back = UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) and -1 or 1
-	if t == Enum.UserInputType.Touch then
-		touchPos = input.Position
-	elseif t == Enum.UserInputType.MouseButton1 then
-		if buildMode then
-			holding = isHoldTool(tool)
-			doAction(false)
-		end
-	elseif input.KeyCode == Enum.KeyCode.R then
-		if buildMode and isPlacing(tool) then rotate(back) end
-	elseif input.KeyCode == Enum.KeyCode.T then
-		if buildMode and Decor.railTool(tool) then FM.tilt("pitch", back) end
-	elseif input.KeyCode == Enum.KeyCode.Y then
-		if buildMode and Decor.railTool(tool) then FM.tilt("roll", back) end
-	elseif input.KeyCode == Enum.KeyCode.V then
-		if buildMode and FM.on and Decor.railTool(tool) then
-			FM.flip = not FM.flip
-			refreshFreeButtons()
-		end
-	elseif input.KeyCode == Enum.KeyCode.M then
-		if buildMode and FM.on and not Decor.open then FM.toggleMagnet() end
-	elseif input.KeyCode == Enum.KeyCode.N then
-		if buildMode and FM.on and not Decor.open then FM.cycleStep() end
-	elseif input.KeyCode == Enum.KeyCode.F then
-		if buildMode and not Decor.open then setFreeMode(not FM.on) end
-	elseif input.KeyCode == Enum.KeyCode.E then
-		if buildMode and isPlacing(tool) then setLevel(level + 1) end
-	elseif input.KeyCode == Enum.KeyCode.Q then
-		if buildMode and isPlacing(tool) then setLevel(level - 1) end
-	elseif input.KeyCode == Enum.KeyCode.G then
-		if buildMode and isPlacing(tool) then setLevel(0) end
-	elseif input.KeyCode == Enum.KeyCode.B then
-		if data and Loading.uiReady then setBuildMode(not buildMode) end
-	elseif input.KeyCode == Enum.KeyCode.Nine then
-		if buildMode then Decor.setOpen(not Decor.open) end
+	local t = input.UserInputType; local back = UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) and -1 or 1
+	if t == Enum.UserInputType.Touch then touchPos = input.Position
+	elseif t == Enum.UserInputType.MouseButton1 then if buildMode then holding = isHoldTool(tool); doAction(false) end
+	elseif input.KeyCode == Enum.KeyCode.R then if buildMode and isPlacing(tool) then rotate(back) end
+	elseif input.KeyCode == Enum.KeyCode.T then if buildMode and Decor.railTool(tool) then FM.tilt("pitch", back) end
+	elseif input.KeyCode == Enum.KeyCode.Y then if buildMode and Decor.railTool(tool) then FM.tilt("roll", back) end
+	elseif input.KeyCode == Enum.KeyCode.V then if buildMode and FM.on and Decor.railTool(tool) then FM.flip = not FM.flip; refreshFreeButtons() end
+	elseif input.KeyCode == Enum.KeyCode.M then if buildMode and FM.on and not Decor.open then FM.toggleMagnet() end
+	elseif input.KeyCode == Enum.KeyCode.N then if buildMode and FM.on and not Decor.open then FM.cycleStep() end
+	elseif input.KeyCode == Enum.KeyCode.F then if buildMode and not Decor.open then setFreeMode(not FM.on) end
+	elseif input.KeyCode == Enum.KeyCode.E then if buildMode and isPlacing(tool) then setLevel(level + 1) end
+	elseif input.KeyCode == Enum.KeyCode.Q then if buildMode and isPlacing(tool) then setLevel(level - 1) end
+	elseif input.KeyCode == Enum.KeyCode.G then if buildMode and isPlacing(tool) then setLevel(0) end
+	elseif input.KeyCode == Enum.KeyCode.B then if data and Loading.uiReady then setBuildMode(not buildMode) end
+	elseif input.KeyCode == Enum.KeyCode.Nine then if buildMode then Decor.setOpen(not Decor.open) end
 	elseif TOOL_KEYS[input.KeyCode] and buildMode then
 		local name = TOOL_KEYS[input.KeyCode]
-		if name ~= "loop" or FM.on then
-			if Decor.open then Decor.setOpen(false) end
-			setTool(name)
-		end
+		if name ~= "loop" or FM.on then if Decor.open then Decor.setOpen(false) end; setTool(name) end
 	end
 end)
 
-UserInputService.InputEnded:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1 then holding = false end
-end)
-
-UserInputService.JumpRequest:Connect(function()
-	if cart and cart.riding then setRiding(false) end
-end)
-
-player.CharacterRemoving:Connect(function()
-	if cart and cart.riding then
-		cart.riding = false
-		refreshCartHud()
-	end
-end)
+UserInputService.InputEnded:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseButton1 then holding = false end end)
+UserInputService.JumpRequest:Connect(function() if cart and cart.riding then setRiding(false) end end)
+player.CharacterRemoving:Connect(function() if cart and cart.riding then cart.riding = false; refreshCartHud() end end)
 
 RunService.RenderStepped:Connect(function(dt)
-	if Home.needSave then
-		Home.needSave = false
-		markDirty()
-	end
+	if Home.needSave then Home.needSave = false; markDirty() end
 	if Decor.open then Decor.spin(dt) end
 	if buildMode then
-		if tool == "erase" or tool == "cart" or tool == "edit" then
-			updateHover()
-		elseif ghost then
-			updateGhost(dt)
-		end
+		if tool == "erase" or tool == "cart" or tool == "edit" then updateHover()
+		elseif ghost then updateGhost(dt) end
 		if holding then doAction(true) end
 	end
 	stepCart(dt)
 	FX.update(dt)
 end)
 
--- ===== Старт =====
+-- ===== Старт (с защитой от зависания) =====
 task.spawn(function()
-	local canSave =
-		type(writefile)  == "function" and
-		type(readfile)   == "function" and
-		type(isfile)     == "function" and
-		type(isfolder)   == "function" and
-		type(makefolder) == "function"
+	warn("[RailSave] writefile=" .. tostring(type(writefile)) .. " readfile=" .. tostring(type(readfile)) .. " JSONEncode=" .. tostring(type(HttpService.JSONEncode)))
+	local canSave = type(writefile) == "function" and type(readfile) == "function" and type(HttpService.JSONEncode) == "function" and type(HttpService.JSONDecode) == "function"
+	if not canSave then warn("[RailSave] ФАЙЛОВЫЕ ФУНКЦИИ НЕДОСТУПНЫ — сохранение выключено") end
 
 	local raw
-	if canSave then raw = readSaveFile() end
+	if canSave then
+		raw = readSaveFile()
+		if raw then warn("[RailSave] данные прочитаны ✓") else warn("[RailSave] файла нет — новый старт") end
+	end
 	saveAvailable = canSave
 
 	data = normalize(raw)
@@ -4267,23 +3542,26 @@ task.spawn(function()
 	buildSlotCards()
 	refreshSlots()
 
-	loadRails(data.slots[data.active].rails)
+	-- Защита: если файл битый, скрипт не зависнет
+	local okLoad, errLoad = pcall(loadRails, data.slots[data.active].rails)
+	if not okLoad then
+		warn("[RailSave] Ошибка при загрузке рельс: " .. tostring(errLoad) .. ". Сбрасываю в чистый лист.")
+		data = normalize(nil)
+		clearRails()
+		pcall(loadRails, data.slots[data.active].rails)
+	end
 	busy = false
 	refreshSlots()
 
 	while not Loading.done do task.wait(0.1) end
-
 	Profile.drop()
 	task.wait(0.3)
-
-	pill.Position = UDim2.new(0.5, 0, 0, -70)
-	pill.Visible = true
+	pill.Position = UDim2.new(0.5, 0, 0, -70); pill.Visible = true
 	tween(pill, 0.5, { Position = UDim2.new(0.5, 0, 0, 10) }, Enum.EasingStyle.Back)
-	dock.Position = UDim2.new(0.5, 0, 1, 90)
-	dock.Visible = true
+	dock.Position = UDim2.new(0.5, 0, 1, 90); dock.Visible = true
 	tween(dock, 0.5, { Position = UDim2.new(0.5, 0, 1, -14) }, Enum.EasingStyle.Back)
 	Loading.uiReady = true
-
 	task.wait(Profile.HOLD)
 	Profile.settle()
+	warn("[RailSave] загрузка завершена, скрипт готов к работе!")
 end)
