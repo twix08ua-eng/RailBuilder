@@ -6618,3 +6618,7 @@ end)
 
 -- Экономика загружается параллельно
 task.spawn(Shop.load)
+print("=== ПРОВЕРКА ФУНКЦИЙ ===")
+print("ensureDir:", type(ensureDir))
+print("buildSlotCards:", type(buildSlotCards))
+print("Shop.load:", type(Shop.load))
