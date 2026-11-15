@@ -1,11 +1,6 @@
--- LocalScript (ВСЁ В ОДНОМ) — ФИНАЛ + ТАБЛИЧКИ + СВОБОДНЫЙ РЕЖИМ + ЭКРАН ЗАГРУЗКИ + УКРАШЕНИЯ
--- Положи в: StarterPlayer > StarterPlayerScripts > RailBuilder
--- Рельсы, таблички, украшения и вагонетка существуют только на твоём клиенте — другие игроки их не видят.
--- Сохранение между заходами работает через файлы (RailBuilder/build.json и RailBuilder/economy.json).
---
--- УКРАШЕНИЯ — кнопка «Декор» (или клавиша 9) закрывает нижнюю панель и открывает панель с украшениями:
--- в каждой карточке вместо картинки крутится объёмная модель. Выбери украшение и ставь его
--- на землю, на рельсы или на нужную высоту (E / Q). R — повернуть (шаг 15°), кнопка «Назад» — вернуть обычную панель.
+-- LocalScript — ФИНАЛ + ТАБЛИЧКИ + СВОБОДНЫЙ РЕЖИМ + ЭКРАН ЗАГРУЗКИ + УКРАШЕНИЯ + НПС + МАГАЗИН
+-- Сохранение: RailBuilder/build.json (постройки) и RailBuilder/economy.json (монеты, скины, квесты)
+-- Требует экзекутор с поддержкой writefile / readfile / isfile / isfolder / makefolder
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -15,64 +10,56 @@ local UserInputService = game:GetService("UserInputService")
 local ContentProvider = game:GetService("ContentProvider")
 local HttpService = game:GetService("HttpService")
 
-local player = Players.LocalPlayer
-local camera = workspace.CurrentCamera
+-- ===== Проверка поддержки файлов =====
+local HAS_FILE_IO = type(writefile) == "function"
+	and type(readfile) == "function"
+	and type(isfile) == "function"
+	and type(isfolder) == "function"
+	and type(makefolder) == "function"
 
--- ===== Файловое сохранение (безопасная версия) =====
+if HAS_FILE_IO then
+	print("[RailBuilder] Файлы: ✓ сохранение включено")
+else
+	warn("[RailBuilder] Файлы: ✗ сохранение ОТКЛЮЧЕНО (executor не поддерживает writefile/readfile)")
+end
+
+-- ===== Файловое сохранение =====
 local SAVE_DIR = "RailBuilder"
 local BUILD_FILE = SAVE_DIR .. "/build.json"
 local ECON_FILE = SAVE_DIR .. "/economy.json"
 
-local HAS_FILE_IO = type(writefile) == "function" and type(readfile) == "function" and type(isfile) == "function" and type(isfolder) == "function" and type(makefolder) == "function"
-
-if not HAS_FILE_IO then
-    warn("⚠ [RailBuilder] Твой executor не поддерживает файлы (isfile, writefile и т.д.). Сохранение ОТКЛЮЧЕНО.")
-end
-
 local function ensureDir()
-    if not HAS_FILE_IO then return end
-    if not isfolder(SAVE_DIR) then
-        pcall(makefolder, SAVE_DIR)
-    end
+	if not HAS_FILE_IO then return end
+	pcall(function()
+		if not isfolder(SAVE_DIR) then
+			makefolder(SAVE_DIR)
+		end
+	end)
 end
 
 local function writeJSON(path, tbl)
-    if not HAS_FILE_IO then return false, "no file io" end
-    ensureDir()
-    local ok, encoded = pcall(function() return HttpService:JSONEncode(tbl) end)
-    if not ok then return false, encoded end
-    local ok2, err = pcall(writefile, path, encoded)
-    if not ok2 then return false, err end
-    return true
+	if not HAS_FILE_IO then return false, "no file io" end
+	ensureDir()
+	local ok, encoded = pcall(function() return HttpService:JSONEncode(tbl) end)
+	if not ok then return false, encoded end
+	local ok2, err = pcall(writefile, path, encoded)
+	if not ok2 then return false, err end
+	return true
 end
 
 local function readJSON(path)
-    if not HAS_FILE_IO then return nil end
-    if not isfile(path) then return nil end
-    local ok, content = pcall(readfile, path)
-    if not ok or not content or content == "" then return nil end
-    local ok2, decoded = pcall(function() return HttpService:JSONDecode(content) end)
-    if not ok2 or type(decoded) ~= "table" then return nil end
-    return decoded
+	if not HAS_FILE_IO then return nil end
+	local okFile, exists = pcall(isfile, path)
+	if not okFile or not exists then return nil end
+	local ok, content = pcall(readfile, path)
+	if not ok or not content or content == "" then return nil end
+	local ok2, decoded = pcall(function() return HttpService:JSONDecode(content) end)
+	if not ok2 or type(decoded) ~= "table" then return nil end
+	return decoded
 end
 
-local function writeJSON(path, tbl)
-    ensureDir()
-    local ok, encoded = pcall(function() return HttpService:JSONEncode(tbl) end)
-    if not ok then return false, encoded end
-    local ok2, err = pcall(writefile, path, encoded)
-    if not ok2 then return false, err end
-    return true
-end
-
-local function readJSON(path)
-    if not isfile(path) then return nil end
-    local ok, content = pcall(readfile, path)
-    if not ok or not content or content == "" then return nil end
-    local ok2, decoded = pcall(function() return HttpService:JSONDecode(content) end)
-    if not ok2 or type(decoded) ~= "table" then return nil end
-    return decoded
-end
+local player = Players.LocalPlayer
+local camera = workspace.CurrentCamera
 
 -- ===== Настройки =====
 local GRID = 4
@@ -80,32 +67,29 @@ local BASE_HEIGHT = 0.4
 local SLOT_COUNT = 5
 local MAX_RAILS = 500
 local SAVE_DELAY = 3
-local RISE = 2          -- на сколько студов поднимается уклон = один уровень высоты
-local MAX_LEVEL = 100    -- максимум уровней вверх
+local RISE = 2
+local MAX_LEVEL = 100
 local CART_SPEEDS = { 8, 16, 28 }
 local CART_SPEED_NAMES = { "🐢 Медленно", "🏃 Средне", "⚡ Быстро" }
-local SEAT_OFFSET = CFrame.new(0, 2.3, 0.1) -- где сидит игрок относительно вагонетки
-local SIGN_MAX_CHARS = 80   -- максимум символов на табличке
-local SIGN_MAX_LINES = 4    -- максимум строк на табличке
+local SIGN_MAX_CHARS = 80
+local SIGN_MAX_LINES = 4
 local SIGN_DEFAULT = "Привет!"
 
--- картинки интерфейса
 local IMG = {
-	PLACE = "rbxassetid://4485364377",      -- кнопка «Поставить»
-	DECOR = "rbxassetid://136476233036438", -- кнопка «Украшения»
+	PLACE = "rbxassetid://4485364377",
+	DECOR = "rbxassetid://136476233036438",
 }
 
--- ID моделей из каталога (для справки: из LocalScript модели по ID не загрузить, поэтому все украшения собраны в скрипте)
 local MODELS = {
-	pumpkin = 15429930446,     -- 🎃 Halloween: Тыква
-	hay = 5117398695,          -- 🎃 Halloween: Сено
-	tree = 11720499037,        -- 🎄 Merry Christmas: Ёлка
-	gift = 332163549,          -- 🎄 Merry Christmas: Подарок
+	pumpkin = 15429930446,
+	hay = 5117398695,
+	tree = 11720499037,
+	gift = 332163549,
 }
 
--- всё, что связано с украшениями, лежит в одной таблице (в скрипте и так много переменных)
+-- всё про украшения
 local Decor = {
-	list = { -- порядок и подписи карточек (для каждого ключа есть сборщик в Decor.builders)
+	list = {
 		{ key = "door", name = "Дверь", tag = "Дом", turn = 90 },
 		{ key = "wall", name = "Стена", tag = "Дом", turn = 90 },
 		{ key = "kotost", name = "Котость", tag = "Питомец" },
@@ -127,36 +111,24 @@ local Decor = {
 		{ key = "crate", name = "Ящик", tag = "Разное" },
 		{ key = "lamp", name = "Фонарь", tag = "Разное" },
 	},
-	GRID = 1,            -- шаг привязки украшений (студы)
-	TURN = 15,           -- на сколько градусов поворачивает R
-	open = false,        -- панель украшений открыта
-	key = "door",        -- выбранное украшение
-	ghostKey = nil,      -- какое украшение сейчас нарисовано призраком
+	GRID = 1, TURN = 15, open = false, key = "door", ghostKey = nil,
 	builders = {}, spinners = {}, cards = {}, angle = 0,
 }
 
--- эффект «рыбий глаз»: на большой скорости (когда ты сидишь в вагонетке) угол обзора камеры раскрывается шире
+-- эффект «рыбий глаз»
 local FX = {
-	START = 18, -- с какой скорости (студов/с) начинается эффект
-	FULL = 32,  -- на какой скорости эффект работает на полную
-	ADD = 40,   -- на сколько градусов раскрывается угол обзора (обычно 70 → 110)
-	IN = 3,     -- как быстро камера «разъезжается»
-	OUT = 2.5,  -- как быстро возвращается обратно
-	add = 0,    -- сколько градусов добавлено прямо сейчас
+	START = 18, FULL = 32, ADD = 40, IN = 3, OUT = 2.5, add = 0,
 }
 
--- ===== Магазин, скины и квесты (настройки) =====
--- Валюта — «РельсКоины» (это не leaderstats, а просто цифра в карточке игрока рядом с регионом).
--- Деньги, квесты и выпадение скинов теперь хранятся в файле RailBuilder/economy.json (локально).
+-- ===== Скины =====
 local Skins = {
 	RARITY = {
 		common = { name = "Обычная", color = Color3.fromRGB(205, 210, 220) },
 		rare = { name = "Редкая", color = Color3.fromRGB(80, 165, 255) },
 		epic = { name = "Эпическая", color = Color3.fromRGB(185, 105, 255) },
-		mythic = { name = "Мифическая", color = Color3.fromRGB(255, 64, 64) }, -- мифик — красным
+		mythic = { name = "Мифическая", color = Color3.fromRGB(255, 64, 64) },
 		legendary = { name = "Легендарная", color = Color3.fromRGB(255, 200, 60) },
 	},
-	-- kind = "rail": скин рельсы (ставится вместо обычной рельсы); kind = "cart": скин вагонетки
 	defs = {
 		retro_rail = { name = "Ретро-рельса", rarity = "common", kind = "rail", info = "В стиле старого Роблокса (Stud). Меняет цвет, когда на неё наезжает вагонетка." },
 		rusty_rail = { name = "Ржавая рельса", rarity = "common", kind = "rail", info = "Обычная рельса, только ржавая." },
@@ -177,32 +149,32 @@ local Skins = {
 		cool_cart = { name = "Крутая вагонетка", rarity = "legendary", kind = "cart", info = "Брутальная, и она в очках." },
 		cozy_cart = { name = "Уютная вагонетка", rarity = "legendary", kind = "cart", info = "Мягкая и комфортная, а в ней сидят маленькие фигурки тебя." },
 	},
-	list = { -- порядок в окне «Мои скины»
+	list = {
 		"retro_rail", "rusty_rail", "break_rail", "ornate_rail", "ghost_rail", "car_cart", "bed_cart", "antigrav_rail",
 		"glitch_rail", "wood_cart", "tnt_cart", "mine_rail", "trap_rail", "rainbow_cart", "retro_cart", "fast_cart",
 		"cool_cart", "cozy_cart",
 	},
-	SOUNDS = { -- длинные ID записаны строками (иначе Luau превращает их в «1.2e+14»)
-		break_rail = "rbxassetid://140278004623742", -- ломающаяся рельса
-		ghost = "rbxassetid://6891548543",           -- появляется чёрный Rig
-		drop = "rbxassetid://123183864684576",       -- рельса без гравитации резко падает (и удар молота)
-		beep = "rbxasset://sounds/electronicpingshort.wav", -- писк ТНТ и мины (встроенный звук Roblox, можно заменить)
-		boom = "rbxasset://sounds/impact_explosion_03.mp3", -- взрыв (встроенный звук Roblox, можно заменить)
+	SOUNDS = {
+		break_rail = "rbxassetid://140278004623742",
+		ghost = "rbxassetid://6891548543",
+		drop = "rbxassetid://123183864684576",
+		beep = "rbxasset://sounds/electronicpingshort.wav",
+		boom = "rbxasset://sounds/impact_explosion_03.mp3",
 	},
-	COOL = { -- как часто эффект рельсы может сработать (секунды)
+	COOL = {
 		retro_rail = 0.4, break_rail = 3.5, ghost_rail = 8, antigrav_rail = 10, glitch_rail = 5, mine_rail = 12, trap_rail = 6,
 	},
 	railStyle = {}, cartB = {}, enter = {}, anims = {}, trap = {}, noAnim = false,
 }
-
+-- ===== Магазин и квесты: настройки =====
 local Shop = {
-	PRICE = 50, -- цена сундука (РельсКоины)
+	PRICE = 50,
 	IMG = {
 		shop = "rbxassetid://131625469621882",
 		quests = "rbxassetid://14135445185",
 		build = "rbxassetid://138312969840397",
 		slots = "rbxassetid://124838856369065",
-		card = "rbxassetid://101302319467603", -- крутящийся фон карточки выпавшего предмета
+		card = "rbxassetid://101302319467603",
 	},
 	QUESTS = {
 		rails = { title = "Поставь 100 рельс", text = "Поставь 100 рельс (прямых, поворотов или уклонов).", goal = 100 },
@@ -216,110 +188,108 @@ local Shop = {
 	pending = {}, windows = {}, spinners = {}, busy = false, err = nil,
 }
 
--- карточка игрока после загрузки (аватарка скина, ник, регион-флаг)
+-- карточка игрока после загрузки
 local Profile = {
-	HOLD = 2.2,   -- сколько секунд карточка висит по центру, пока появляются панели
-	KEEP = true,  -- true: потом уменьшается в правый верхний угол и остаётся поверх панелей; false: исчезает
-	SMALL = 0.5,  -- во сколько раз уменьшается в углу
+	HOLD = 2.2,
+	KEEP = true,
+	SMALL = 0.5,
 }
 
 -- двери и жители (NPC)
 local Home = {
-	-- двери
-	IMAGE = "rbxassetid://11274293900", -- картинка над дверью, когда к ней подходишь
-	HOLD = 0.1,                         -- сколько секунд держать кнопку у двери
-	RANGE = 11,                          -- с какого расстояния дверь замечает тебя (студы)
-	-- жители
-	MAX_NPC = 3,          -- сколько жителей (появляются, когда на базе есть хотя бы одна дверь)
-	SMALL_CHANCE = 0.4,   -- шанс, что житель окажется малышом (если жителей 3, хотя бы один малыш будет всегда)
-	SMALL_SCALE_MIN = 0.55, -- размер малыша: от ... (1 = обычный рост)
-	SMALL_SCALE_MAX = 0.75, -- ... до ...
-	WALK = 8,             -- скорость ходьбы
-	IN_ROOM = 9,          -- насколько далеко от двери гуляют внутри (студы)
-	OUT_ROOM = 12,         -- и снаружи
-	SEE = 32,             -- с какого расстояния замечают тебя (студы)
-	WAVE_CHANCE = 0.4,    -- шанс помахать, когда увидели тебя
-	WAVE_COOLDOWN = 8,   -- не чаще, чем раз в столько секунд
-	OUT_CHANCE = 0.4,     -- шанс выйти погулять, когда пришло время
-	JOY_CHANCE = 0.6,     -- шанс подпрыгнуть от радости у двери, когда нагулялись
-	SCARE_CHANCE = 0.7,   -- шанс испугаться, если ты появился слишком резко
-	SCARE_DIST = 11,      -- ближе этого расстояния можно испугаться (студы)
-	SCARE_SPEED = 30,     -- так быстро (студов/с) нужно к жителю приблизиться, чтобы он испугался
-	SCARE_COOLDOWN = 40,  -- не чаще, чем раз в столько секунд
-	ROUTE_MIN = 4,        -- самый короткий маршрут, который можно сохранить (точек; одна точка = STEP студов)
-	ROUTE_SLOTS = 5,      -- сколько слотов маршрутов в разделе «Обучение»
-	NPC_IMAGE = "rbxassetid://6236978075", -- картинка на кнопке «НПС» в нижней панели
-	TITLE_IMAGE = "rbxassetid://11130226997", -- картинка в начале заголовка окна «НПС»
-	DEBUG = true,         -- писать в консоль (Output), что происходит с обучением; потом можно поставить false
-	LEARN_CHANCE = 1,     -- шанс, что житель пойдёт учиться (1 = каждый)
-	STARE = 5,            -- сколько секунд удивляются на месте
-	VISIT_MIN = 60,       -- как часто житель сам ходит на выученное место: от ... секунд
-	VISIT_MAX = 120,      -- ... до ... секунд
-	VISIT_CHANCE = 0.6,   -- и с каким шансом
-	STEP = 2.5,           -- через сколько студов записывается точка твоего маршрута
-	MAX_TRAIL = 600,      -- самый длинный маршрут (точек)
-	FEAR_RADIUS = 18,     -- чужой NPC (модель с Humanoid, не игрок) ближе этого расстояния пугает жителей — они убегают
-	FEAR_COOLDOWN = 15,   -- не чаще, чем раз в столько секунд
-	ALARM_RADIUS = 22,    -- объект с AnimationController ближе этого — паника: бегут вдвое быстрее к двери
-	FAST = 2,             -- во сколько раз быстрее бегут при испуге и панике
+	IMAGE = "rbxassetid://11274293900",
+	HOLD = 0.1,
+	RANGE = 11,
+	MAX_NPC = 3,
+	SMALL_CHANCE = 0.4,
+	SMALL_SCALE_MIN = 0.55,
+	SMALL_SCALE_MAX = 0.75,
+	WALK = 8,
+	IN_ROOM = 9,
+	OUT_ROOM = 12,
+	SEE = 32,
+	WAVE_CHANCE = 0.4,
+	WAVE_COOLDOWN = 8,
+	OUT_CHANCE = 0.4,
+	JOY_CHANCE = 0.6,
+	SCARE_CHANCE = 0.7,
+	SCARE_DIST = 11,
+	SCARE_SPEED = 30,
+	SCARE_COOLDOWN = 40,
+	ROUTE_MIN = 4,
+	ROUTE_SLOTS = 5,
+	NPC_IMAGE = "rbxassetid://6236978075",
+	TITLE_IMAGE = "rbxassetid://11130226997",
+	DEBUG = true,
+	LEARN_CHANCE = 1,
+	STARE = 5,
+	VISIT_MIN = 60,
+	VISIT_MAX = 120,
+	VISIT_CHANCE = 0.6,
+	STEP = 2.5,
+	MAX_TRAIL = 600,
+	FEAR_RADIUS = 18,
+	FEAR_COOLDOWN = 15,
+	ALARM_RADIUS = 22,
+	FAST = 2,
 	SOUNDS = {
-		wave = "rbxassetid://130780071265356",   -- здоровается: машет рукой и говорит «Hi!»
-		joy = "rbxassetid://130926713428015",  -- прыгает от радости
-		scare = "rbxassetid://75049633628598", -- испугался
-		laugh = "rbxassetid://102769336849011", -- смеётся
+		wave = "rbxassetid://130780071265356",
+		joy = "rbxassetid://130926713428015",
+		scare = "rbxassetid://75049633628598",
+		laugh = "rbxassetid://102769336849011",
 	},
-	ANIMS = { -- стандартные анимации Roblox для R6
+	ANIMS = {
 		idle = 180435571, walk = 180426354, wave = 128777973, cheer = 129423030, laugh = 129423131,
 	},
-	SKIN = Color3.fromRGB(235, 205, 165), -- кожа (голова и руки) всегда бежевая
-	SHIRTS = { -- футболки жителей (ID из каталога): McDonalds, Mellstroy, Red Bakon Boi, без названия
+	SKIN = Color3.fromRGB(235, 205, 165),
+	SHIRTS = {
 		90787762613314, 16350897656, 5171326293, 93665648144394,
 	},
-	PANTS = { -- штаны жителей (ID из каталога); shirt — какая футболка полагается именно к этим штанам
-		{ id = 10174536646 }, -- Poor
-		{ id = 8592697362 },  -- Bacon
-		{ id = 1923579875, shirt = 6297766966 }, -- Sleep (к ним — футболка Sleep)
-		{ id = 14285822913 }, -- Kit bermuda black
+	PANTS = {
+		{ id = 10174536646 },
+		{ id = 8592697362 },
+		{ id = 1923579875, shirt = 6297766966 },
+		{ id = 14285822913 },
 	},
-	HAIRS = { -- волосы жителей (ID из каталога): Pal Hair, True Blue Hair, Brown Charmer Hair
+	HAIRS = {
 		63690008, 451221329, 376548738,
 	},
 	hairNext = math.random(0, 2),
-	FACES = { -- лица для эмоций (ID лиц из каталога); обычное лицо не меняем. ID — строками!
-		prescare = "89760806612988",  -- готовится испугаться
-		scared = "124751387086397",   -- испугался
-		wave = "99812701718083",      -- машет тебе
-		joy = "125715171707930",      -- рад
-		terrified = "72403229016812", -- перепугался (убегает, паника)
-		laugh = "16775193696",        -- смеётся
-		amazed = "8595439578",        -- удивился (на месте, где «научился»)
+	FACES = {
+		prescare = "89760806612988",
+		scared = "124751387086397",
+		wave = "99812701718083",
+		joy = "125715171707930",
+		terrified = "72403229016812",
+		laugh = "16775193696",
+		amazed = "8595439578",
 	},
 	shirtNext = math.random(0, 3),
-	GREET = "Hi! 👋",      -- облачко над головой, когда здоровается
+	GREET = "Hi! 👋",
 	doors = {}, npcs = {}, spawning = 0, acc = 0, lastSync = 0, failedAt = -100,
 }
 
--- настройки экрана загрузки
+-- экран загрузки
 local LOAD = {
-	TIME = 5,                              -- сколько секунд длится загрузка
-	IMAGE = "rbxassetid://136476233036438", -- картинка в центре
-	SOUND = "rbxassetid://88060724643515",  -- музыка, под которую пульсирует картинка
-	TITLE = "Котость.Rails",               -- текст под картинкой
-	VOLUME = 0.8,                          -- громкость музыки
-	PULSE = 0.16,                          -- насколько сильно картинка «бьётся» (0.16 = до +16% размера)
+	TIME = 5,
+	IMAGE = "rbxassetid://136476233036438",
+	SOUND = "rbxassetid://88060724643515",
+	TITLE = "Котость.Rails",
+	VOLUME = 0.8,
+	PULSE = 0.16,
 }
 
--- настройки свободного режима
+-- свободный режим
 local FCFG = {
-	GRID = 1,                -- шаг привязки по горизонтали (студы)
-	STEP = 1,                -- на сколько студов поднимает один шаг высоты
-	MAX_LEVEL = 400,         -- максимум шагов высоты
-	ANGLES = { 90, 45, 15 }, -- шаги поворота / наклона / крена (градусы), кнопка «Шаг»
-	MAGNET = 3,              -- «липкость» магнита (студы)
-	LOOP_RADIUS = 9,         -- радиус мёртвой петли
-	LOOP_SHIFT = 4,          -- на сколько выезд из петли сдвинут вбок (чтобы не врезаться во въезд)
-	LOOP_SEGMENTS = 36,      -- из скольких кусочков собрана петля
-	END_TOL = 1.25,          -- насколько близко концы рельс должны быть друг к другу, чтобы вагонетка переехала
+	GRID = 1,
+	STEP = 1,
+	MAX_LEVEL = 400,
+	ANGLES = { 90, 45, 15 },
+	MAGNET = 3,
+	LOOP_RADIUS = 9,
+	LOOP_SHIFT = 4,
+	LOOP_SEGMENTS = 36,
+	END_TOL = 1.25,
 }
 
 local RAMP_ANGLE = math.atan(RISE / GRID)
@@ -339,7 +309,7 @@ local C = {
 	warn = Color3.fromRGB(255, 205, 90),
 	text = Color3.fromRGB(240, 244, 255),
 	sub = Color3.fromRGB(148, 156, 184),
-	swOn = Color3.fromRGB(52, 199, 89),  -- зелёный, как у переключателя на iPhone
+	swOn = Color3.fromRGB(52, 199, 89),
 	swOff = Color3.fromRGB(72, 76, 100),
 }
 local TOUCH_ONLY = UserInputService.TouchEnabled and not UserInputService.MouseEnabled
@@ -352,14 +322,14 @@ local data = nil
 local railCount = 0
 local busy = true
 local saveQueued = false
-local saveState = "off" -- off / saving / saved / error
+local saveState = "off"
 
 local buildMode = false
-local tool = "straight" -- straight / curve / ramp / loop / sign / edit / erase / cart / decor
+local tool = "straight"
 local rotTarget = 0
-local level, refY = 0, 0 -- уровень высоты и высота земли для уровня 0
+local level, refY = 0, 0
 local ghost, ghostKind, ghostHL
-local ghostShown, ghostCF -- ghostShown — где призрак нарисован сейчас, ghostCF — куда реально встанет рельса
+local ghostShown, ghostCF
 local ghostValid = false
 local hoverRail
 local holding = false
@@ -367,24 +337,24 @@ local touchPos
 local lastInputTouch = TOUCH_ONLY
 local lastLimitToast = 0
 local slotsOpen = false
-local signText = SIGN_DEFAULT -- текст, который ставится на новые таблички
+local signText = SIGN_DEFAULT
 
--- свободный режим: все его переменные собраны в одну таблицу
+-- свободный режим: переменные
 local FM = {
-	on = false,          -- переключатель включён
-	magnet = true,       -- магнит: прилипание к свободным концам других рельс
-	flip = false,        -- «сторона»: рельса прикладывается концом, а не началом
-	angle = 1,           -- номер шага угла в FCFG.ANGLES
-	snapped = false,     -- призрак сейчас прилип к концу рельсы
-	pitch = 0, roll = 0, -- наклон и крен «в воздухе» (поворот вокруг вертикали — это rotTarget)
-	rel = { yaw = 0, pitch = 0, roll = 0 }, -- повороты относительно конца рельсы, к которому прилип призрак
+	on = false,
+	magnet = true,
+	flip = false,
+	angle = 1,
+	snapped = false,
+	pitch = 0, roll = 0,
+	rel = { yaw = 0, pitch = 0, roll = 0 },
 }
 
 function FM.wrap(v)
 	return ((v + 180) % 360) - 180
 end
 
-function FM.levelStep() -- на сколько студов поднимается один «уровень» высоты
+function FM.levelStep()
 	return FM.on and FCFG.STEP or RISE
 end
 
@@ -392,7 +362,6 @@ function FM.stepAngle()
 	return FCFG.ANGLES[FM.angle]
 end
 
--- сбрасываем всё, что настроено «под свободный режим»: наклон, крен, углы стыка, сторону, прилипание
 function FM.resetAngles()
 	FM.pitch, FM.roll = 0, 0
 	FM.rel.yaw, FM.rel.pitch, FM.rel.roll = 0, 0, 0
@@ -400,17 +369,17 @@ function FM.resetAngles()
 	FM.snapped = false
 end
 
--- ближайший прямой угол (0 / 90 / 180 / 270) — обычные рельсы всегда стоят ровно по сетке
 function FM.flatYaw(v)
 	return (math.round(v / 90) * 90) % 360
 end
 
-local tileAt = {} -- [ "gx,gz" ] = модель рельсы / таблички (только обычный режим)
-local pieces = {} -- [модель] = данные о пути рельсы / таблички
-local eps = {}    -- концы всех рельс (для магнита и для переезда вагонетки)
+local tileAt = {}
+local pieces = {}
+local eps = {}
 local cart = nil
 
 local toast, removeCart, refreshCartHud, refreshPill, refreshSlots
+
 -- ===== Помощники =====
 local function tween(obj, t, props, style, dir)
 	local tw = TweenService:Create(obj, TweenInfo.new(t, style or Enum.EasingStyle.Quad, dir or Enum.EasingDirection.Out), props)
@@ -439,13 +408,11 @@ local function cellKey(x, z)
 	return (math.round(x / GRID) + 0) .. "," .. (math.round(z / GRID) + 0)
 end
 
--- привязка к сетке: 4 студа в обычном режиме, 1 студ в свободном
 local function snap(v)
 	local g = FM.on and FCFG.GRID or GRID
 	return math.round(v / g) * g
 end
 
--- «5 объектов», «1 объект», «2 объекта»
 local function objWord(n)
 	local m10, m100 = n % 10, n % 100
 	if m10 == 1 and m100 ~= 11 then
@@ -456,7 +423,6 @@ local function objWord(n)
 	return n .. " объектов"
 end
 
--- Текст таблички: убираем управляющие символы, ограничиваем строки и длину
 local function cleanSignText(s)
 	s = tostring(s or "")
 	s = s:gsub("\r", "")
@@ -476,12 +442,10 @@ local function cleanSignText(s)
 	return s
 end
 
--- то же, но ещё и обрезаем пробелы/пустые строки по краям
 local function finalSignText(s)
 	return (cleanSignText(s):match("^%s*(.-)%s*$")) or ""
 end
 
--- записать текст на табличку (на обе стороны)
 local function setSignText(model, text)
 	model:SetAttribute("Text", text)
 	for _, d in ipairs(model:GetDescendants()) do
@@ -490,34 +454,29 @@ local function setSignText(model, text)
 		end
 	end
 end
-
 -- ===== Фейковый экран загрузки =====
--- Картинка плавно прилетает в центр, ниже появляется название, а сама картинка пульсирует под музыку.
--- Громкость музыки читаем через PlaybackLoudness; пока музыка не заиграла (или не загрузилась),
--- картинка пульсирует по таймеру, чтобы экран не выглядел мёртвым.
 local Loading = { done = false, uiReady = false }
 do
 	local vp = camera.ViewportSize
 	local imgSize = math.clamp(math.min(vp.X, vp.Y) * 0.36, 120, 260)
 	local half = imgSize / 2
-	local titleY = half + imgSize * 0.12 + 30 -- где (по вертикали от центра экрана) стоит название
+	local titleY = half + imgSize * 0.12 + 30
 	local T = math.max(LOAD.TIME, 2)
-	local FADE = 0.5                          -- последние полсекунды экран плавно гаснет
+	local FADE = 0.5
 
 	local lgui = make("ScreenGui", {
 		Name = "RailLoadingUI", ResetOnSpawn = false, IgnoreGuiInset = true,
 		DisplayOrder = 1000, ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 	}, player:WaitForChild("PlayerGui"))
 
-	-- CanvasGroup — чтобы гасить весь экран целиком одним твином
 	local screen = make("CanvasGroup", {
 		Size = UDim2.fromScale(1, 1), BackgroundColor3 = C.bg, BorderSizePixel = 0,
-		Active = true, GroupTransparency = 0, -- Active — чтобы клики не проходили сквозь экран загрузки
+		Active = true, GroupTransparency = 0,
 	}, lgui)
 
 	local img = make("ImageLabel", {
 		AnchorPoint = Vector2.new(0.5, 0.5),
-		Position = UDim2.fromScale(0.5, -0.4), -- стартует за верхним краем экрана
+		Position = UDim2.fromScale(0.5, -0.4),
 		Size = UDim2.fromOffset(imgSize, imgSize),
 		BackgroundTransparency = 1, Image = LOAD.IMAGE, ImageTransparency = 1,
 		ScaleType = Enum.ScaleType.Fit, Rotation = -18,
@@ -533,7 +492,6 @@ do
 	}, screen)
 	local titleStroke = make("UIStroke", { Color = Color3.new(0, 0, 0), Thickness = 3, Transparency = 1 }, title)
 
-	-- полоса загрузки как на рисунке: толстая чёрная обводка, голубая заливка и косые чёрные штрихи
 	local barW = math.clamp(vp.X * 0.62, 260, 640)
 	local BLACK = Color3.new(0, 0, 0)
 	local track = make("Frame", {
@@ -550,13 +508,11 @@ do
 		Size = UDim2.fromScale(0, 1), BackgroundColor3 = C.accent, BorderSizePixel = 0, ClipsDescendants = true,
 	}, track)
 	make("UICorner", { CornerRadius = UDim.new(0, 8) }, fill)
-	-- лёгкий блик сверху
 	local gloss = make("Frame", {
 		Position = UDim2.new(0, 6, 0, 3), Size = UDim2.new(1, -12, 0, 5), BackgroundColor3 = Color3.fromRGB(190, 240, 255),
 		BackgroundTransparency = 0.45, BorderSizePixel = 0,
 	}, fill)
 	make("UICorner", { CornerRadius = UDim.new(0, 3) }, gloss)
-	-- косые чёрные штрихи (то длиннее, то короче); открываются по мере заполнения полосы
 	local sx, tall = 46, true
 	while sx < barW do
 		make("Frame", {
@@ -571,7 +527,6 @@ do
 		Name = "LoadingMusic", SoundId = LOAD.SOUND, Volume = LOAD.VOLUME, Looped = true,
 	}, lgui)
 
-	-- подгружаем картинку и звук заранее (не блокируя остальной скрипт)
 	task.spawn(function()
 		pcall(function()
 			ContentProvider:PreloadAsync({ img, sound })
@@ -579,7 +534,6 @@ do
 	end)
 	sound:Play()
 
-	-- пульс: удар по громкости — быстро вверх, затем плавно вниз
 	local smooth = 0
 	local heard = false
 	local pulseConn = RunService.RenderStepped:Connect(function(dt)
@@ -598,11 +552,9 @@ do
 		pulse.Scale = 1 + smooth * LOAD.PULSE
 	end)
 
-	-- 0.0 с: картинка прилетает в центр
 	tween(img, 1.3, { Position = UDim2.fromScale(0.5, 0.5), Rotation = 0 }, Enum.EasingStyle.Quint)
 	tween(img, 0.6, { ImageTransparency = 0 })
 
-	-- 0.9 с: появляются название и полоска загрузки
 	task.delay(0.9, function()
 		tween(title, 0.7, { TextTransparency = 0, Position = UDim2.new(0.5, 0, 0.5, titleY) }, Enum.EasingStyle.Quint)
 		tween(track, 0.5, { BackgroundTransparency = 0 })
@@ -611,13 +563,11 @@ do
 		tween(fill, math.max(0.1, T - 0.9 - FADE), { Size = UDim2.fromScale(1, 1) }, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
 	end)
 
-	-- последние полсекунды: экран и музыка плавно гаснут
 	task.delay(T - FADE, function()
 		tween(screen, FADE, { GroupTransparency = 1 })
 		tween(sound, FADE, { Volume = 0 })
 	end)
 
-	-- ровно через LOAD.TIME секунд: убираем экран, и дальше показываются обычные панели
 	task.delay(T, function()
 		pulseConn:Disconnect()
 		sound:Stop()
@@ -626,7 +576,7 @@ do
 	end)
 end
 
--- ===== Мир: контейнер рельс (клиентский → виден только тебе) =====
+-- ===== Мир: контейнер рельс =====
 local railsFolder = make("Model", { Name = "MyRails_LocalOnly" }, workspace)
 
 local rayParams = RaycastParams.new()
@@ -640,15 +590,11 @@ local supportParams = RaycastParams.new()
 supportParams.FilterType = Enum.RaycastFilterType.Exclude
 
 -- ===== Геометрия путей =====
--- У каждой рельсы есть «путь»: точки вдоль её центра, направление движения в каждой точке
--- и «верх» пути (куда смотрит крыша вагонетки). Всё это — в системе координат самой рельсы.
 local Geo = {}
 do
 	local Y_UP = Vector3.new(0, 1, 0)
 	local dataCache, frameCache = {}, {}
 
-	-- точка петли в системе координат рельсы (вход — в нуле, едем вдоль +Z);
-	-- сдвиг вбок плавный, поэтому и вход, и выход идут строго прямо
 	local function loopPoint(theta)
 		local R = FCFG.LOOP_RADIUS
 		local t = theta / (2 * math.pi)
@@ -657,11 +603,10 @@ do
 		local pos = Vector3.new(FCFG.LOOP_SHIFT * sm, R * (1 - math.cos(theta)), R * math.sin(theta))
 		local d = Vector3.new(FCFG.LOOP_SHIFT * dsm / (2 * math.pi), R * math.sin(theta), R * math.cos(theta))
 		local tan = d.Unit
-		local upc = Vector3.new(0, math.cos(theta), -math.sin(theta)) -- «верх» смотрит в центр круга
+		local upc = Vector3.new(0, math.cos(theta), -math.sin(theta))
 		return pos, tan, (upc - tan * upc:Dot(tan)).Unit
 	end
 
-	-- система координат «стыка»: Z — вперёд по пути, Y — «верх»
 	function Geo.frameCF(pos, fwd, up)
 		local z = fwd.Unit
 		local x = up:Cross(z).Unit
@@ -669,8 +614,6 @@ do
 		return CFrame.fromMatrix(pos, x, y, z)
 	end
 
-	-- путь рельсы: pts — точки, tans — направление, ups — «верх»;
-	-- sDir/sUp и eDir/eUp — направление и «верх» на стыках (у уклона стыки плоские)
 	function Geo.localData(kind)
 		local cached = dataCache[kind]
 		if cached then
@@ -697,7 +640,7 @@ do
 			for k = 0, FCFG.LOOP_SEGMENTS do
 				pts[k + 1], tans[k + 1], ups[k + 1] = loopPoint(k / FCFG.LOOP_SEGMENTS * 2 * math.pi)
 			end
-		else -- straight
+		else
 			pts = { Vector3.new(0, 0, -h), Vector3.new(0, 0, h) }
 			tans = { Vector3.new(0, 0, 1), Vector3.new(0, 0, 1) }
 			ups = { Y_UP, Y_UP }
@@ -715,7 +658,6 @@ do
 		return cached
 	end
 
-	-- системы координат начала (s) и конца (e) рельсы — по ним рельса стыкуется с другой
 	function Geo.localFrames(kind)
 		local cached = frameCache[kind]
 		if cached then
@@ -731,17 +673,14 @@ do
 		return cached
 	end
 
-	-- положение рельсы: yaw — вокруг вертикали, pitch и roll — «сырые» углы Эйлера (порядок Y, X, Z)
 	function Geo.pieceCF(x, y, z, yaw, pitch, roll)
 		return CFrame.new(x, y, z) * CFrame.fromEulerAnglesYXZ(math.rad(pitch), math.rad(yaw), math.rad(roll))
 	end
 
-	-- повороты, которые задаёт игрок: yaw — вокруг вертикали, pitchUp — наклон носом вверх, roll — крен
 	function Geo.oriCF(yaw, pitchUp, roll)
 		return CFrame.fromEulerAnglesYXZ(math.rad(-pitchUp), math.rad(yaw), math.rad(roll))
 	end
 
-	-- обратно: из CFrame в x, y, z, yaw, pitch, roll (то, что хранится в атрибутах и в сохранении)
 	function Geo.decompose(cf)
 		local rx, ry, rz = cf:ToEulerAnglesYXZ()
 		return cf.X, cf.Y, cf.Z, math.deg(ry), math.deg(rx), math.deg(rz)
@@ -764,9 +703,6 @@ local function newPart(parent, name, size, offset, color, material, collide)
 	return p
 end
 
--- kind: "straight" (прямая), "curve" (поворот на 90°), "ramp" (уклон: нижний конец -Z, верхний +Z),
---       "sign" (деревянная табличка: лицевая сторона смотрит в -Z, текст есть и сзади),
---       "loop" (мёртвая петля: вход в нуле, едем вдоль +Z, выезд сдвинут вбок на LOOP_SHIFT)
 local function newRailModel(kind, name)
 	local model = Instance.new("Model")
 	model.Name = name or "Rail"
@@ -776,7 +712,6 @@ local function newRailModel(kind, name)
 	local gravel = Color3.fromRGB(88, 88, 94)
 
 	if kind == "ramp" then
-		-- начало координат модели = центр нижнего конца уклона
 		local tilt = CFrame.new(0, RISE / 2, 0) * CFrame.Angles(-RAMP_ANGLE, 0, 0)
 
 		local origin = newPart(model, "Origin", Vector3.new(0.2, 0.2, 0.2), CFrame.new(0, 0, 0), wood, Enum.Material.Wood, false)
@@ -786,7 +721,6 @@ local function newRailModel(kind, name)
 
 		newPart(model, "Base", Vector3.new(4, BASE_HEIGHT, RAMP_LEN), tilt, gravel, Enum.Material.Pebble, true)
 
-		-- насыпь под уклоном (ступеньками, спрятана под плитой)
 		for k = 0, 3 do
 			local zk = -1.5 + k
 			local top = (zk + 0.5 + 2) * RISE / 4 - 0.22
@@ -813,7 +747,6 @@ local function newRailModel(kind, name)
 		model.PrimaryPart = base
 		local top = BASE_HEIGHT / 2
 
-		-- два столба и перекладина сверху
 		for _, sx in ipairs({ -1, 1 }) do
 			newPart(model, "Post", Vector3.new(0.4, 3.4, 0.4), CFrame.new(sx * 1.75, top + 1.7, 0),
 				wood, Enum.Material.Wood, true)
@@ -821,7 +754,6 @@ local function newRailModel(kind, name)
 		newPart(model, "TopBeam", Vector3.new(3.9, 0.25, 0.6), CFrame.new(0, top + 3.525, 0),
 			wood, Enum.Material.Wood, false)
 
-		-- доска с текстом (спереди и сзади)
 		local board = newPart(model, "Board", Vector3.new(3.2, 1.6, 0.3), CFrame.new(0, top + 2.3, 0),
 			planks, Enum.Material.WoodPlanks, true)
 		for _, face in ipairs({ Enum.NormalId.Front, Enum.NormalId.Back }) do
@@ -847,7 +779,6 @@ local function newRailModel(kind, name)
 	end
 
 	if kind == "loop" then
-		-- кольцо из коротких кусочков пути: плита, два рельса и шпалы; крыша вагонетки смотрит в центр круга
 		local origin = newPart(model, "Origin", Vector3.new(0.2, 0.2, 0.2), CFrame.new(0, 0, 0), wood, Enum.Material.Wood, false)
 		origin.Transparency = 1
 		origin.CanQuery = false
@@ -877,7 +808,6 @@ local function newRailModel(kind, name)
 	model.PrimaryPart = base
 
 	if kind == "curve" then
-		-- дуга вокруг угла клетки (2, -2): соединяет сторону -Z и сторону +X
 		local center = Vector3.new(2, 0, -2)
 		local function arcPoint(phi, r)
 			return center + Vector3.new(-math.cos(phi), 0, math.sin(phi)) * r
@@ -927,7 +857,7 @@ local function newCartModel()
 
 	local pivot = p("Pivot", Vector3.new(0.2, 0.2, 0.2), CFrame.new(0, 0, 0), wood, Enum.Material.Wood)
 	pivot.Transparency = 1
-	model.PrimaryPart = pivot -- точка (0,0,0) = верх рельсы
+	model.PrimaryPart = pivot
 
 	p("Floor", Vector3.new(2.8, 0.25, 3.6), CFrame.new(0, 1.0, 0), wood, Enum.Material.Wood)
 	for _, sx in ipairs({ -1, 1 }) do
@@ -942,30 +872,25 @@ local function newCartModel()
 				Enum.Material.Metal, Enum.PartType.Cylinder)
 		end
 	end
-	-- фонарь спереди (перед = -Z)
 	local lamp = p("Lamp", Vector3.new(0.45, 0.45, 0.45), CFrame.new(0, 2.45, -1.675),
 		Color3.fromRGB(255, 205, 110), Enum.Material.Neon)
 	make("PointLight", { Color = Color3.fromRGB(255, 200, 120), Range = 16, Brightness = 1.5 }, lamp)
 	return model
 end
 -- ===== Украшения =====
--- Модели по ID (таблица MODELS) из LocalScript не подгрузить — InsertService работает только на сервере.
--- Поэтому каждое украшение собрано из деталей. Начало координат — центр основания (земля),
--- «лицо» смотрит в -Z. Внутри модели нет вложенных Model — иначе «Стереть» не сможет её найти.
+-- Начало координат — центр основания (земля), «лицо» смотрит в -Z.
 do
 	local PLASTIC, FABRIC = Enum.Material.SmoothPlastic, Enum.Material.Fabric
 	local WOOD, NEON = Enum.Material.Wood, Enum.Material.Neon
 	local SLATE, METAL, GRASS = Enum.Material.Slate, Enum.Material.Metal, Enum.Material.Grass
 	local B = Decor.builders
 
-	-- эллипсоид (шар, растянутый до нужного размера)
 	local function ball(parent, name, size, cf, color, material, collide)
 		local p = newPart(parent, name, size, cf, color, material, collide == true)
 		make("SpecialMesh", { MeshType = Enum.MeshType.Sphere }, p)
 		return p
 	end
 
-	-- вертикальный цилиндр (у Part-цилиндра ось — X, поэтому поворачиваем на 90° вокруг Z)
 	local function pillar(parent, name, height, diam, cf, color, material, collide)
 		local p = newPart(parent, name, Vector3.new(height, diam, diam), cf * CFrame.Angles(0, 0, math.rad(90)),
 			color, material, collide == true)
@@ -973,7 +898,6 @@ do
 		return p
 	end
 
-	-- 🎃 Тыква: шесть долек, светящееся лицо, хвостик
 	B.pumpkin = function(m)
 		local orange, orange2 = Color3.fromRGB(240, 118, 22), Color3.fromRGB(224, 100, 14)
 		for k = 0, 5 do
@@ -998,7 +922,6 @@ do
 		make("PointLight", { Color = Color3.fromRGB(255, 170, 60), Range = 8, Brightness = 0.9 }, mid)
 	end
 
-	-- 🎃 Сено: тюк с верёвками и торчащими соломинками
 	B.hay = function(m)
 		local straw, light = Color3.fromRGB(224, 186, 86), Color3.fromRGB(240, 212, 120)
 		local strap = Color3.fromRGB(96, 66, 38)
@@ -1007,7 +930,7 @@ do
 		for _, sx in ipairs({ -0.95, 0.95 }) do
 			newPart(m, "Strap", Vector3.new(0.14, 2.16, 2.26), CFrame.new(sx, 1.05, 0), strap, FABRIC, false)
 		end
-		local rng = Random.new(11) -- всегда одни и те же соломинки
+		local rng = Random.new(11)
 		for i = 1, 18 do
 			local cf = CFrame.new(rng:NextNumber(-1.6, 1.6), 2.14, rng:NextNumber(-1, 1))
 				* CFrame.Angles(rng:NextNumber(-0.6, 0.6), rng:NextNumber(0, math.pi), rng:NextNumber(-0.6, 0.6))
@@ -1022,12 +945,11 @@ do
 		end
 	end
 
-	-- 🎄 Ёлка: три яруса ступенчатой «хвои», шарики и звезда
 	B.tree = function(m)
 		local trunk = Color3.fromRGB(104, 70, 42)
 		local leaf, leaf2 = Color3.fromRGB(34, 122, 60), Color3.fromRGB(46, 148, 74)
 		pillar(m, "Trunk", 1.0, 0.9, CFrame.new(0, 0.5, 0), trunk, WOOD, true)
-		local tiers = { { 4.2, 0.9 }, { 3.2, 2.1 }, { 2.2, 3.3 } } -- { ширина нижнего диска, высота яруса }
+		local tiers = { { 4.2, 0.9 }, { 3.2, 2.1 }, { 2.2, 3.3 } }
 		for t, tier in ipairs(tiers) do
 			for j = 0, 2 do
 				pillar(m, "Needles", 0.5, tier[1] * (1 - 0.28 * j), CFrame.new(0, tier[2] + 0.25 + j * 0.4, 0),
@@ -1056,7 +978,6 @@ do
 		end
 	end
 
-	-- 🎄 Подарок: коробка с крышкой, лентой и бантом
 	B.gift = function(m)
 		local box, ribbon = Color3.fromRGB(214, 48, 60), Color3.fromRGB(250, 220, 90)
 		newPart(m, "Box", Vector3.new(2.4, 1.9, 2.4), CFrame.new(0, 0.95, 0), box, PLASTIC, true)
@@ -1072,20 +993,18 @@ do
 		ball(m, "Knot", Vector3.new(0.5, 0.5, 0.5), CFrame.new(0, 2.32, 0), ribbon, PLASTIC, false)
 	end
 
-	-- 🎃 Надгробие: плита с круглым верхом, крестом и холмиком земли
 	B.tombstone = function(m)
 		local stone, dark = Color3.fromRGB(122, 126, 134), Color3.fromRGB(58, 60, 68)
 		newPart(m, "Slab", Vector3.new(2.6, 0.35, 1.6), CFrame.new(0, 0.175, 0), Color3.fromRGB(96, 100, 108), SLATE, true)
 		newPart(m, "Stone", Vector3.new(1.7, 1.7, 0.45), CFrame.new(0, 1.2, 0), stone, SLATE, true)
 		local top = newPart(m, "StoneTop", Vector3.new(0.45, 1.7, 1.7), CFrame.new(0, 2.05, 0) * CFrame.Angles(0, math.rad(90), 0),
 			stone, SLATE, true)
-		top.Shape = Enum.PartType.Cylinder -- круглый верх плиты
+		top.Shape = Enum.PartType.Cylinder
 		newPart(m, "CrossV", Vector3.new(0.2, 1.1, 0.1), CFrame.new(0, 1.75, -0.24), dark, SLATE, false)
 		newPart(m, "CrossH", Vector3.new(0.75, 0.2, 0.1), CFrame.new(0, 2.05, -0.24), dark, SLATE, false)
 		ball(m, "Mound", Vector3.new(2.2, 0.6, 1.5), CFrame.new(0, 0.1, -1.2), Color3.fromRGB(82, 60, 40), Enum.Material.Ground, false)
 	end
 
-	-- 🎃 Котёл: чёрный горшок с кипящим зелёным зельем (светится)
 	B.cauldron = function(m)
 		local iron, green = Color3.fromRGB(40, 42, 48), Color3.fromRGB(120, 255, 90)
 		ball(m, "Pot", Vector3.new(3.0, 2.0, 3.0), CFrame.new(0, 0.95, 0), iron, METAL, true)
@@ -1100,7 +1019,6 @@ do
 		end
 	end
 
-	-- 🎄 Снеговик: три шара, шляпа, морковка, шарф и руки-палки
 	B.snowman = function(m)
 		local snow, coal, red = Color3.fromRGB(246, 250, 255), Color3.fromRGB(28, 28, 34), Color3.fromRGB(200, 40, 48)
 		ball(m, "Bottom", Vector3.new(2.1, 1.9, 2.1), CFrame.new(0, 0.95, 0), snow, PLASTIC, true)
@@ -1112,7 +1030,7 @@ do
 			newPart(m, "Arm", Vector3.new(1.4, 0.09, 0.09), CFrame.new(sx * 1.25, 2.85, 0) * CFrame.Angles(0, 0, math.rad(sx * 25)),
 				Color3.fromRGB(96, 66, 40), WOOD, false)
 		end
-		for i = -2, 2 do -- улыбка из угольков
+		for i = -2, 2 do
 			ball(m, "Mouth", Vector3.new(0.09, 0.09, 0.08), CFrame.new(i * 0.1, 3.3 + 0.025 * i * i, -0.51), coal, PLASTIC, false)
 		end
 		for _, b in ipairs({ { 2.85, -0.68 }, { 2.5, -0.75 }, { 2.15, -0.68 } }) do
@@ -1124,11 +1042,10 @@ do
 		pillar(m, "Scarf", 0.3, 1.2, CFrame.new(0, 3.0, 0), red, FABRIC, false)
 		newPart(m, "ScarfEnd", Vector3.new(0.3, 0.8, 0.1), CFrame.new(0.4, 2.6, -0.7) * CFrame.Angles(0, 0, math.rad(-8)),
 			red, FABRIC, false)
-	end
-	-- 🌿 Куст: несколько зелёных «облачков» и красные ягоды
-B.bush = function(m)
+    end
+    B.bush = function(m)
 	local greens = { Color3.fromRGB(52, 120, 46), Color3.fromRGB(64, 140, 52), Color3.fromRGB(44, 104, 42) }
-	local blobs = { -- { x, y, z, ширина, высота, глубина }
+	local blobs = {
 		{ 0, 0.9, 0, 2.7, 1.9, 2.5 }, { -1.0, 0.7, 0.2, 1.9, 1.5, 1.9 }, { 1.0, 0.7, -0.1, 2.0, 1.6, 1.9 },
 		{ 0.2, 1.3, 0.3, 1.9, 1.5, 1.7 }, { -0.4, 0.6, -0.8, 1.6, 1.2, 1.4 },
 	}
@@ -1146,10 +1063,9 @@ B.bush = function(m)
 	end
 end
 
--- 🌿 Гриб: большой мухомор и два маленьких рядом
 B.mushroom = function(m)
 	local cream, red, spot = Color3.fromRGB(240, 228, 205), Color3.fromRGB(205, 45, 52), Color3.fromRGB(255, 250, 245)
-	local function shroom(x, z, h, w) -- ножка, шляпка и белые пятнышки
+	local function shroom(x, z, h, w)
 		pillar(m, "Stem", h, w * 0.3, CFrame.new(x, h / 2, z), cream, PLASTIC, true)
 		local capH = w * 0.55
 		local cy = h + capH * 0.2
@@ -1166,7 +1082,6 @@ B.mushroom = function(m)
 	shroom(-1.5, 0.9, 0.5, 1.0)
 end
 
--- 🌿 Камень: три валуна разного размера
 B.rock = function(m)
 	local g1, g2, g3 = Color3.fromRGB(118, 120, 128), Color3.fromRGB(104, 106, 114), Color3.fromRGB(132, 134, 140)
 	ball(m, "Rock", Vector3.new(3.0, 1.9, 2.4), CFrame.new(0, 0.8, 0) * CFrame.Angles(0.05, math.rad(20), 0.08), g1, SLATE, true)
@@ -1174,7 +1089,6 @@ B.rock = function(m)
 	ball(m, "Rock", Vector3.new(1.5, 1.0, 1.4), CFrame.new(-1.4, 0.35, -0.6) * CFrame.Angles(0.1, math.rad(50), 0), g3, SLATE, true)
 end
 
--- 🌿 Цветы: полянка с пятью разноцветными цветами
 B.flowers = function(m)
 	ball(m, "Patch", Vector3.new(3.2, 0.3, 2.8), CFrame.new(0, 0.05, 0), Color3.fromRGB(70, 130, 56), GRASS, false)
 	local stem = Color3.fromRGB(60, 130, 52)
@@ -1197,7 +1111,6 @@ B.flowers = function(m)
 	end
 end
 
--- 🌿 Костёр: круг камней, шалашик из брёвен, огонь и тёплый свет
 B.campfire = function(m)
 	local logC, stone = Color3.fromRGB(96, 64, 38), Color3.fromRGB(120, 122, 130)
 	for k = 0, 7 do
@@ -1216,7 +1129,6 @@ B.campfire = function(m)
 	make("Fire", { Size = 4, Heat = 6 }, core)
 end
 
--- 🧱 Забор: пять досок с остриями и две перекладины (по ширине одной клетки)
 B.fence = function(m)
 	local paint, rail = Color3.fromRGB(238, 230, 210), Color3.fromRGB(150, 110, 70)
 	for _, y in ipairs({ 0.65, 1.45 }) do
@@ -1230,7 +1142,6 @@ B.fence = function(m)
 	end
 end
 
--- 🧱 Бочка: доски, три железных обруча и крышка
 B.barrel = function(m)
 	local wood, hoop = Color3.fromRGB(140, 96, 56), Color3.fromRGB(58, 60, 68)
 	pillar(m, "Barrel", 2.2, 1.8, CFrame.new(0, 1.1, 0), wood, WOOD, true)
@@ -1240,7 +1151,6 @@ B.barrel = function(m)
 	pillar(m, "Lid", 0.1, 1.5, CFrame.new(0, 2.2, 0), Color3.fromRGB(170, 124, 76), WOOD, false)
 end
 
--- 🧱 Ящик: деревянный куб с рамой и диагональными планками
 B.crate = function(m)
 	local plank, frame = Color3.fromRGB(176, 130, 80), Color3.fromRGB(120, 82, 48)
 	newPart(m, "Box", Vector3.new(2.0, 2.0, 2.0), CFrame.new(0, 1.0, 0), plank, Enum.Material.WoodPlanks, true)
@@ -1259,7 +1169,6 @@ B.crate = function(m)
 	end
 end
 
--- 🧱 Фонарь: чугунный столб с тёплой лампой (по-настоящему светит)
 B.lamp = function(m)
 	local iron, glow = Color3.fromRGB(44, 46, 54), Color3.fromRGB(255, 222, 150)
 	pillar(m, "Base", 0.5, 0.95, CFrame.new(0, 0.25, 0), iron, METAL, true)
@@ -1269,110 +1178,94 @@ B.lamp = function(m)
 	pillar(m, "Cap", 0.2, 1.1, CFrame.new(0, 5.05, 0), iron, METAL, false)
 	pillar(m, "CapTop", 0.2, 0.5, CFrame.new(0, 5.25, 0), iron, METAL, false)
 	make("PointLight", { Color = Color3.fromRGB(255, 214, 140), Range = 26, Brightness = 1.8 }, bulb)
-end
+    end
+    	B.door = function(m)
+		local wall, frame = Color3.fromRGB(226, 214, 190), Color3.fromRGB(104, 70, 42)
+		local wood, dark, gold = Color3.fromRGB(150, 104, 60), Color3.fromRGB(112, 76, 44), Color3.fromRGB(240, 200, 80)
+		for _, sx in ipairs({ -1, 1 }) do
+			newPart(m, "WallSide", Vector3.new(1.85, 7.05, 0.6), CFrame.new(sx * 3.075, 3.525, 0), wall, PLASTIC, true)
+			newPart(m, "Jamb", Vector3.new(0.25, 7.05, 0.76), CFrame.new(sx * 2.025, 3.525, 0), frame, WOOD, true)
+			newPart(m, "Skirting", Vector3.new(1.88, 0.8, 0.7), CFrame.new(sx * 3.075, 0.4, 0), frame, WOOD, false)
+		end
+		newPart(m, "WallTop", Vector3.new(8, 1.95, 0.6), CFrame.new(0, 8.025, 0), wall, PLASTIC, true)
+		newPart(m, "Lintel", Vector3.new(4.3, 0.25, 0.76), CFrame.new(0, 6.925, 0), frame, WOOD, true)
+		newPart(m, "Cornice", Vector3.new(8.06, 0.5, 0.8), CFrame.new(0, 8.75, 0), frame, WOOD, false)
+		newPart(m, "Sill", Vector3.new(3.9, 0.1, 0.9), CFrame.new(0, 0.05, 0), dark, WOOD, false)
+		newPart(m, "Mat", Vector3.new(3.4, 0.08, 1.6), CFrame.new(0, 0.04, -1.4), Color3.fromRGB(150, 50, 56), FABRIC, false)
 
--- 🏠 Дверь в стене: стена 8 × 9 с проёмом 3.8 × 6.8 (пролезет любой персонаж), рама и створка.
--- Створку помечаем "Leaf" — она открывается (см. Home). Снаружи (там, где коврик) — «лицо» двери; створка открывается внутрь.
-B.door = function(m)
-	local wall, frame = Color3.fromRGB(226, 214, 190), Color3.fromRGB(104, 70, 42)
-	local wood, dark, gold = Color3.fromRGB(150, 104, 60), Color3.fromRGB(112, 76, 44), Color3.fromRGB(240, 200, 80)
-	for _, sx in ipairs({ -1, 1 }) do
-		newPart(m, "WallSide", Vector3.new(1.85, 7.05, 0.6), CFrame.new(sx * 3.075, 3.525, 0), wall, PLASTIC, true)
-		newPart(m, "Jamb", Vector3.new(0.25, 7.05, 0.76), CFrame.new(sx * 2.025, 3.525, 0), frame, WOOD, true)
-		newPart(m, "Skirting", Vector3.new(1.88, 0.8, 0.7), CFrame.new(sx * 3.075, 0.4, 0), frame, WOOD, false)
-	end
-	newPart(m, "WallTop", Vector3.new(8, 1.95, 0.6), CFrame.new(0, 8.025, 0), wall, PLASTIC, true)
-	newPart(m, "Lintel", Vector3.new(4.3, 0.25, 0.76), CFrame.new(0, 6.925, 0), frame, WOOD, true)
-	newPart(m, "Cornice", Vector3.new(8.06, 0.5, 0.8), CFrame.new(0, 8.75, 0), frame, WOOD, false)
-	newPart(m, "Sill", Vector3.new(3.9, 0.1, 0.9), CFrame.new(0, 0.05, 0), dark, WOOD, false)
-	-- коврик снаружи
-	newPart(m, "Mat", Vector3.new(3.4, 0.08, 1.6), CFrame.new(0, 0.04, -1.4), Color3.fromRGB(150, 50, 56), FABRIC, false)
-
-	-- створка: петли слева (x = -1.9); всё, что помечено "Leaf", поворачивается вместе с ней
-	local function leaf(part)
-		part:SetAttribute("Leaf", true)
-		return part
-	end
-	leaf(newPart(m, "Leaf", Vector3.new(3.8, 6.7, 0.25), CFrame.new(0, 3.45, 0), wood, Enum.Material.WoodPlanks, true))
-	for _, sz in ipairs({ -1, 1 }) do
-		leaf(newPart(m, "Panel", Vector3.new(2.8, 2.4, 0.08), CFrame.new(0, 5.0, sz * 0.14), dark, WOOD, false))
-		leaf(newPart(m, "Panel", Vector3.new(2.8, 2.4, 0.08), CFrame.new(0, 1.9, sz * 0.14), dark, WOOD, false))
-		leaf(ball(m, "Knob", Vector3.new(0.34, 0.34, 0.34), CFrame.new(1.4, 3.3, sz * 0.3), gold, METAL, false))
-	end
-end
-
--- 🏠 Стена: такой же кусок стены 8 × 9, как у двери, но без проёма (чтобы построить дом)
-B.wall = function(m)
-	local wall, trim = Color3.fromRGB(226, 214, 190), Color3.fromRGB(104, 70, 42)
-	newPart(m, "Wall", Vector3.new(8, 9, 0.6), CFrame.new(0, 4.5, 0), wall, PLASTIC, true)
-	newPart(m, "Skirting", Vector3.new(8.06, 0.8, 0.7), CFrame.new(0, 0.4, 0), trim, WOOD, false)
-	newPart(m, "Cornice", Vector3.new(8.06, 0.5, 0.8), CFrame.new(0, 8.75, 0), trim, WOOD, false)
-end
-
--- 🐈 Котость: огромный круглый трёхцветный кот (как на картинке): белое пузо, рыжие и чёрные пятна, чёрная «маска»
--- с белой полоской на голове, большие круглые глаза (смотрит вверх), прижатые ушки, крошечные лапки
-B.kotost = function(m)
-	local white, orange, black = Color3.fromRGB(248, 244, 238), Color3.fromRGB(222, 124, 44), Color3.fromRGB(28, 28, 32)
-	-- туловище, пятна, хвост, лапки
-	ball(m, "Body", Vector3.new(4.2, 3.7, 3.9), CFrame.new(0, 1.85, 0.2), white, FABRIC, true)
-	ball(m, "PatchR", Vector3.new(0.75, 2.3, 2.1), CFrame.new(1.78, 2.1, 0.3), orange, FABRIC, false)
-	ball(m, "PatchR2", Vector3.new(0.75, 1.5, 1.4), CFrame.new(1.65, 3.0, -0.9), orange, FABRIC, false)
-	ball(m, "PatchL", Vector3.new(0.75, 1.7, 1.6), CFrame.new(-1.78, 2.6, 0.5), orange, FABRIC, false)
-	ball(m, "PatchBlack", Vector3.new(0.75, 1.4, 1.6), CFrame.new(-1.8, 1.0, 0.0), black, FABRIC, false)
-	ball(m, "PatchBack", Vector3.new(2.0, 1.1, 1.6), CFrame.new(0.3, 3.45, 1.2), orange, FABRIC, false)
-	ball(m, "Tail", Vector3.new(0.9, 0.9, 1.5), CFrame.new(1.0, 0.9, 2.4), orange, FABRIC, false)
-	-- голова: белая, сверху и вокруг глаз чёрная «маска», между глаз белая полоска
-	ball(m, "Head", Vector3.new(3.3, 2.5, 2.7), CFrame.new(0, 3.25, -0.75), white, FABRIC, false)
-	ball(m, "Mask", Vector3.new(3.36, 1.55, 2.74), CFrame.new(0, 3.85, -0.75), black, FABRIC, false)
-	ball(m, "Blaze", Vector3.new(0.55, 1.4, 0.4), CFrame.new(0, 3.6, -2.0), white, FABRIC, false)
-	ball(m, "Nose", Vector3.new(0.3, 0.22, 0.22), CFrame.new(0, 2.9, -1.98), Color3.fromRGB(240, 150, 170), PLASTIC, false)
-	for _, sx in ipairs({ -1, 1 }) do
-		ball(m, "Paw", Vector3.new(1.0, 0.55, 1.3), CFrame.new(sx * 0.95, 0.28, -1.75), white, FABRIC, false)
-		ball(m, "Cheek", Vector3.new(1.1, 1.3, 1.1), CFrame.new(sx * 1.35, 2.7, -1.0), white, FABRIC, false)
-		ball(m, "Muzzle", Vector3.new(0.95, 0.75, 0.8), CFrame.new(sx * 0.42, 2.7, -1.65), white, FABRIC, false)
-		-- большие круглые глаза: белок, радужка, зрачок (смещён вверх — кот смотрит вверх) и блик
-		ball(m, "EyeWhite", Vector3.new(0.8, 0.8, 0.3), CFrame.new(sx * 0.7, 3.75, -1.78), Color3.fromRGB(252, 252, 252), PLASTIC, false)
-		ball(m, "Iris", Vector3.new(0.62, 0.62, 0.2), CFrame.new(sx * 0.7, 3.82, -1.9), Color3.fromRGB(62, 42, 32), PLASTIC, false)
-		ball(m, "Pupil", Vector3.new(0.34, 0.4, 0.2), CFrame.new(sx * 0.7, 3.88, -1.97), black, PLASTIC, false)
-		ball(m, "Shine", Vector3.new(0.13, 0.13, 0.1), CFrame.new(sx * 0.6, 4.0, -2.04), white, PLASTIC, false)
-		-- ушки прижаты к голове (чёрные)
-		ball(m, "Ear", Vector3.new(0.95, 0.7, 0.6), CFrame.new(sx * 1.25, 4.5, -0.95) * CFrame.Angles(math.rad(-15), 0, math.rad(sx * -28)),
-			black, FABRIC, false)
-		for _, dy in ipairs({ -0.08, 0.1 }) do
-			newPart(m, "Whisker", Vector3.new(0.9, 0.03, 0.03),
-				CFrame.new(sx * 1.3, 2.75 + dy, -1.6) * CFrame.Angles(0, math.rad(sx * 18), math.rad(sx * dy * 150)),
-				Color3.fromRGB(60, 60, 66), PLASTIC, false)
+		local function leaf(part)
+			part:SetAttribute("Leaf", true)
+			return part
+		end
+		leaf(newPart(m, "Leaf", Vector3.new(3.8, 6.7, 0.25), CFrame.new(0, 3.45, 0), wood, Enum.Material.WoodPlanks, true))
+		for _, sz in ipairs({ -1, 1 }) do
+			leaf(newPart(m, "Panel", Vector3.new(2.8, 2.4, 0.08), CFrame.new(0, 5.0, sz * 0.14), dark, WOOD, false))
+			leaf(newPart(m, "Panel", Vector3.new(2.8, 2.4, 0.08), CFrame.new(0, 1.9, sz * 0.14), dark, WOOD, false))
+			leaf(ball(m, "Knob", Vector3.new(0.34, 0.34, 0.34), CFrame.new(1.4, 3.3, sz * 0.3), gold, METAL, false))
 		end
 	end
+
+	B.wall = function(m)
+		local wall, trim = Color3.fromRGB(226, 214, 190), Color3.fromRGB(104, 70, 42)
+		newPart(m, "Wall", Vector3.new(8, 9, 0.6), CFrame.new(0, 4.5, 0), wall, PLASTIC, true)
+		newPart(m, "Skirting", Vector3.new(8.06, 0.8, 0.7), CFrame.new(0, 0.4, 0), trim, WOOD, false)
+		newPart(m, "Cornice", Vector3.new(8.06, 0.5, 0.8), CFrame.new(0, 8.75, 0), trim, WOOD, false)
 	end
-		-- 💧 Вода: стеклянная бутылка с водой внутри; на этикетке голубая надпись «вода» с чёрной обводкой, ниже «мировая»
+
+	B.kotost = function(m)
+		local white, orange, black = Color3.fromRGB(248, 244, 238), Color3.fromRGB(222, 124, 44), Color3.fromRGB(28, 28, 32)
+		ball(m, "Body", Vector3.new(4.2, 3.7, 3.9), CFrame.new(0, 1.85, 0.2), white, FABRIC, true)
+		ball(m, "PatchR", Vector3.new(0.75, 2.3, 2.1), CFrame.new(1.78, 2.1, 0.3), orange, FABRIC, false)
+		ball(m, "PatchR2", Vector3.new(0.75, 1.5, 1.4), CFrame.new(1.65, 3.0, -0.9), orange, FABRIC, false)
+		ball(m, "PatchL", Vector3.new(0.75, 1.7, 1.6), CFrame.new(-1.78, 2.6, 0.5), orange, FABRIC, false)
+		ball(m, "PatchBlack", Vector3.new(0.75, 1.4, 1.6), CFrame.new(-1.8, 1.0, 0.0), black, FABRIC, false)
+		ball(m, "PatchBack", Vector3.new(2.0, 1.1, 1.6), CFrame.new(0.3, 3.45, 1.2), orange, FABRIC, false)
+		ball(m, "Tail", Vector3.new(0.9, 0.9, 1.5), CFrame.new(1.0, 0.9, 2.4), orange, FABRIC, false)
+		ball(m, "Head", Vector3.new(3.3, 2.5, 2.7), CFrame.new(0, 3.25, -0.75), white, FABRIC, false)
+		ball(m, "Mask", Vector3.new(3.36, 1.55, 2.74), CFrame.new(0, 3.85, -0.75), black, FABRIC, false)
+		ball(m, "Blaze", Vector3.new(0.55, 1.4, 0.4), CFrame.new(0, 3.6, -2.0), white, FABRIC, false)
+		ball(m, "Nose", Vector3.new(0.3, 0.22, 0.22), CFrame.new(0, 2.9, -1.98), Color3.fromRGB(240, 150, 170), PLASTIC, false)
+		for _, sx in ipairs({ -1, 1 }) do
+			ball(m, "Paw", Vector3.new(1.0, 0.55, 1.3), CFrame.new(sx * 0.95, 0.28, -1.75), white, FABRIC, false)
+			ball(m, "Cheek", Vector3.new(1.1, 1.3, 1.1), CFrame.new(sx * 1.35, 2.7, -1.0), white, FABRIC, false)
+			ball(m, "Muzzle", Vector3.new(0.95, 0.75, 0.8), CFrame.new(sx * 0.42, 2.7, -1.65), white, FABRIC, false)
+			ball(m, "EyeWhite", Vector3.new(0.8, 0.8, 0.3), CFrame.new(sx * 0.7, 3.75, -1.78), Color3.fromRGB(252, 252, 252), PLASTIC, false)
+			ball(m, "Iris", Vector3.new(0.62, 0.62, 0.2), CFrame.new(sx * 0.7, 3.82, -1.9), Color3.fromRGB(62, 42, 32), PLASTIC, false)
+			ball(m, "Pupil", Vector3.new(0.34, 0.4, 0.2), CFrame.new(sx * 0.7, 3.88, -1.97), black, PLASTIC, false)
+			ball(m, "Shine", Vector3.new(0.13, 0.13, 0.1), CFrame.new(sx * 0.6, 4.0, -2.04), white, PLASTIC, false)
+			ball(m, "Ear", Vector3.new(0.95, 0.7, 0.6), CFrame.new(sx * 1.25, 4.5, -0.95) * CFrame.Angles(math.rad(-15), 0, math.rad(sx * -28)),
+				black, FABRIC, false)
+			for _, dy in ipairs({ -0.08, 0.1 }) do
+				newPart(m, "Whisker", Vector3.new(0.9, 0.03, 0.03),
+					CFrame.new(sx * 1.3, 2.75 + dy, -1.6) * CFrame.Angles(0, math.rad(sx * 18), math.rad(sx * dy * 150)),
+					Color3.fromRGB(60, 60, 66), PLASTIC, false)
+			end
+		end
+	end
+
 	B.water = function(m)
 		local GLASS = Enum.Material.Glass
 		local glass, water = Color3.fromRGB(205, 232, 245), Color3.fromRGB(80, 180, 255)
-		local function soft(part, t) -- прозрачность детали
+		local function soft(part, t)
 			part.Transparency = t
 			return part
 		end
-		-- стекло: корпус, плечики и горлышко
 		soft(pillar(m, "Bottle", 3.2, 1.9, CFrame.new(0, 1.6, 0), glass, GLASS, true), 0.5)
 		soft(ball(m, "Shoulder", Vector3.new(1.9, 1.3, 1.9), CFrame.new(0, 3.2, 0), glass, GLASS, false), 0.5)
 		soft(pillar(m, "Neck", 0.9, 0.85, CFrame.new(0, 4.1, 0), glass, GLASS, false), 0.5)
-		-- вода внутри
 		soft(pillar(m, "Water", 2.9, 1.72, CFrame.new(0, 1.55, 0), water, GLASS, false), 0.25)
 		soft(ball(m, "WaterTop", Vector3.new(1.72, 0.9, 1.72), CFrame.new(0, 3.0, 0), water, GLASS, false), 0.25)
 		for _, b in ipairs({ { -0.3, 2.2, 0.2 }, { 0.35, 2.6, -0.25 }, { 0.1, 2.9, 0.3 } }) do
 			soft(ball(m, "Bubble", Vector3.new(0.16, 0.16, 0.16), CFrame.new(b[1], b[2], b[3]), WHITE, PLASTIC, false), 0.35)
 		end
-		-- крышка и блик на стекле
 		pillar(m, "CapRing", 0.12, 1.1, CFrame.new(0, 4.5, 0), Color3.fromRGB(40, 110, 190), PLASTIC, false)
 		pillar(m, "Cap", 0.5, 1.05, CFrame.new(0, 4.8, 0), Color3.fromRGB(50, 140, 230), PLASTIC, false)
 		soft(newPart(m, "Glint", Vector3.new(0.1, 2.2, 0.05), CFrame.new(-0.55, 1.8, -0.77) * CFrame.Angles(0, math.rad(35), 0),
 			WHITE, PLASTIC, false), 0.55)
-		-- этикетка: белая лента вокруг бутылки + надпись спереди и сзади
 		soft(pillar(m, "Label", 1.35, 1.99, CFrame.new(0, 1.55, 0), Color3.fromRGB(236, 246, 255), PLASTIC, false), 0.05)
 		for _, side in ipairs({ { -1.025, Enum.NormalId.Front }, { 1.025, Enum.NormalId.Back } }) do
 			local plate = newPart(m, "LabelPlate", Vector3.new(1.7, 1.2, 0.04), CFrame.new(0, 1.55, side[1]), WHITE, PLASTIC, false)
-			plate.Transparency = 1 -- сама деталь невидима, видна только надпись на ней
+			plate.Transparency = 1
 			local sg = make("SurfaceGui", {
 				Face = side[2], SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud, PixelsPerStud = 100,
 			}, plate)
@@ -1381,14 +1274,13 @@ B.kotost = function(m)
 					BackgroundTransparency = 1, Position = UDim2.fromOffset(0, y), Size = UDim2.new(1, 0, 0, h),
 					Font = Enum.Font.GothamBlack, TextSize = size, TextColor3 = color, Text = text,
 				}, sg)
-				make("UIStroke", { Color = Color3.new(0, 0, 0), Thickness = thick }, t) -- чёрная обводка букв
+				make("UIStroke", { Color = Color3.new(0, 0, 0), Thickness = thick }, t)
 			end
 			line("вода", 8, 66, 60, Color3.fromRGB(120, 205, 255), 3)
 			line("мировая", 78, 36, 28, Color3.fromRGB(235, 245, 255), 2)
 		end
 	end
 
-	-- собрать украшение по ключу
 	function Decor.newModel(key, name)
 		local m = Instance.new("Model")
 		m.Name = name or "Decor"
@@ -1401,7 +1293,6 @@ B.kotost = function(m)
 		return m
 	end
 
-	-- карточка с вращающейся моделью (ViewportFrame): вместо картинки крутится сама модель
 	function Decor.addSpinner(parent, key)
 		local vp = make("ViewportFrame", {
 			Position = UDim2.fromOffset(4, 4), Size = UDim2.new(1, -8, 0, 66),
@@ -1413,7 +1304,6 @@ B.kotost = function(m)
 		m.Parent = vp
 		local bbCF, bbSize = m:GetBoundingBox()
 		local c = bbCF.Position
-		-- модель крутится вокруг своей оси (x = 0, z = 0), поэтому камера смотрит на эту ось
 		local radius = bbSize.Magnitude / 2 + Vector3.new(c.X, 0, c.Z).Magnitude
 		local look = Vector3.new(0, c.Y, 0)
 		local dist = radius / math.sin(math.rad(20)) * 1.05
@@ -1424,7 +1314,6 @@ B.kotost = function(m)
 		return vp
 	end
 
-	-- крутим все модели в панели (вызывается каждый кадр, пока панель открыта)
 	function Decor.spin(dt)
 		Decor.angle += dt * 1.4
 		for _, s in ipairs(Decor.spinners) do
@@ -1432,7 +1321,6 @@ B.kotost = function(m)
 		end
 	end
 end
-
 -- опора под приподнятой рельсой (бетонный столб до земли)
 local function groundBelow(x, y, z)
 	local filter = { railsFolder, camera }
@@ -1472,7 +1360,7 @@ local allHL = make("Highlight", {
 	OutlineTransparency = 0.15,
 	DepthMode = Enum.HighlightDepthMode.Occluded,
 	Enabled = false,
-}, railsFolder) -- один Highlight на все рельсы
+}, railsFolder)
 
 local hoverHL = make("Highlight", {
 	FillColor = C.bad,
@@ -1493,18 +1381,15 @@ local function flashRail(target, color)
 		hl:Destroy()
 	end)
 end
+
 -- ===== Дома: двери и жители (NPC) =====
--- ДВЕРЬ — украшение «Дверь» (панель «Декор»). Подойди — дверь подсветится и над ней появится картинка;
--- зажми кнопку на 0.1 с — створка откроется или закроется. Снаружи (там, где коврик) — «лицо» двери, створка открывается внутрь.
--- ЖИТЕЛИ (NPC) появляются, когда на базе есть хотя бы одна дверь. Они гуляют внутри (за дверью), иногда выходят
--- погулять на улицу и возвращаются. Если увидят тебя — могут помахать; нагулявшись у двери — подпрыгивают от радости;
--- если ты появишься перед ними слишком резко — пугаются, смотрят на тебя, смеются и уходят гулять или к двери.
 Home.folder = make("Folder", { Name = "MyResidents_LocalOnly" }, workspace)
 Home.rayParams = RaycastParams.new()
 Home.rayParams.FilterType = Enum.RaycastFilterType.Exclude
 Home.overlap = OverlapParams.new()
 Home.overlap.FilterType = Enum.RaycastFilterType.Exclude
 Home.overlap.MaxParts = 80
+
 do
 	local list = {}
 	for key, id in pairs(Home.FACES) do
@@ -1512,13 +1397,12 @@ do
 	end
 	task.spawn(function()
 		pcall(function()
-			ContentProvider:PreloadAsync(list) -- заранее подгружаем картинки лиц
+			ContentProvider:PreloadAsync(list)
 		end)
 	end)
 end
-Home.kindCache = setmetatable({}, { __mode = "k" }) -- что за модель рядом (человек / объект с аниматором / ничего), помним 4 секунды
+Home.kindCache = setmetatable({}, { __mode = "k" })
 
--- на сколько градусов поворачивает кнопка R у выбранного украшения (стены и двери — по 90°)
 function Decor.turnStep()
 	for _, it in ipairs(Decor.list) do
 		if it.key == Decor.key then
@@ -1529,7 +1413,6 @@ function Decor.turnStep()
 end
 
 -- ----- Двери -----
--- повернуть створку на angle градусов вокруг петель (петли — на левом краю проёма, x = -1.9)
 function Home.setAngle(d, angle)
 	local base = d.model.PrimaryPart.CFrame
 	local hinge = CFrame.new(-1.9, 0, 0)
@@ -1539,7 +1422,6 @@ function Home.setAngle(d, angle)
 	end
 end
 
--- делаем из поставленной модели настоящую дверь: кнопка, подсветка, картинка, створка
 function Home.attachDoor(m, cf)
 	local d = { model = m, leaf = {}, open = false, hintOn = false }
 	local origin = m.PrimaryPart
@@ -1549,16 +1431,14 @@ function Home.attachDoor(m, cf)
 		end
 	end
 
-	-- где «снаружи» и «внутри»: лицо двери (коврик) смотрит наружу, створка открывается внутрь
 	local back = Vector3.new(-cf.LookVector.X, 0, -cf.LookVector.Z).Unit
 	d.pos0 = cf.Position
 	d.back = back
-	d.inGate = d.pos0 + back * 4.4 -- дальше, чем размах створки (3.8), чтобы она не задевала жителя
+	d.inGate = d.pos0 + back * 4.4
 	d.outGate = d.pos0 - back * 3.4
 	d.inCenter = d.pos0 + back * (Home.IN_ROOM * 0.6 + 5)
 	d.outCenter = d.pos0 - back * (Home.OUT_ROOM * 0.6 + 5)
 
-	-- невидимая точка, к которой привязана кнопка
 	local trigger = newPart(m, "Trigger", Vector3.new(0.4, 0.4, 0.4), cf * CFrame.new(0, 3.4, 0), WHITE, Enum.Material.SmoothPlastic, false)
 	trigger.Transparency = 1
 	trigger.CanQuery = false
@@ -1568,10 +1448,9 @@ function Home.attachDoor(m, cf)
 		ActionText = "Открыть", ObjectText = "Дверь",
 		HoldDuration = Home.HOLD, MaxActivationDistance = Home.RANGE,
 		RequiresLineOfSight = false, KeyboardKeyCode = Enum.KeyCode.E,
-		Enabled = not buildMode, -- в режиме строительства двери «спят»
+		Enabled = not buildMode,
 	}, trigger)
 
-	-- подсветка (включается, когда подходишь) и картинка над дверью
 	d.hl = make("Highlight", {
 		FillColor = C.accent, FillTransparency = 0.75, OutlineColor = WHITE, OutlineTransparency = 0,
 		DepthMode = Enum.HighlightDepthMode.AlwaysOnTop, Enabled = false,
@@ -1585,7 +1464,6 @@ function Home.attachDoor(m, cf)
 	}, d.gui)
 	d.imgScale = make("UIScale", { Scale = 0.6 }, d.img)
 
-	-- угол створки хранится в NumberValue — его удобно плавно менять твином
 	d.val = Instance.new("NumberValue")
 	d.val.Changed:Connect(function(v)
 		if m.Parent then
@@ -1598,7 +1476,7 @@ function Home.attachDoor(m, cf)
 	end)
 	Home.doors[m] = d
 	if Home.refreshNpcBtn then
-		Home.refreshNpcBtn() -- появилась дверь — появляется кнопка «НПС»
+		Home.refreshNpcBtn()
 	end
 	return d
 end
@@ -1618,10 +1496,9 @@ function Home.clearDoors()
 	for m in pairs(Home.doors) do
 		Home.detachDoor(m)
 	end
-	Home.resetRoutes() -- маршруты принадлежат слоту постройки: при очистке/смене слота забываем
+	Home.resetRoutes()
 end
 
--- открыть / закрыть; autoClose — через сколько секунд закрыть самой (для жителей)
 function Home.setOpen(d, on, autoClose)
 	if d.open == on then
 		if on and autoClose then
@@ -1633,7 +1510,7 @@ function Home.setOpen(d, on, autoClose)
 	d.closeAt = (on and autoClose) and (os.clock() + autoClose) or nil
 	d.prompt.ActionText = on and "Закрыть" or "Открыть"
 	for _, l in ipairs(d.leaf) do
-		l.part.CanCollide = false -- пока створка движется, сквозь неё можно пройти
+		l.part.CanCollide = false
 	end
 	local tw = tween(d.val, 0.45, { Value = on and -90 or 0 }, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut)
 	tw.Completed:Once(function()
@@ -1645,7 +1522,6 @@ function Home.setOpen(d, on, autoClose)
 	end)
 end
 
--- подсветка и картинка, когда игрок рядом
 function Home.hint(d, on)
 	if d.hintOn == on then
 		return
@@ -1667,7 +1543,6 @@ function Home.hint(d, on)
 	end
 end
 
--- в режиме строительства двери не реагируют (чтобы кнопка не мешала клавишам)
 function Home.setBuild(on)
 	for _, d in pairs(Home.doors) do
 		d.prompt.Enabled = not on
@@ -1693,7 +1568,6 @@ function Home.stepDoors(now)
 		end
 	end
 end
-
 -- ----- Жители: помощники -----
 function Home.filter()
 	local f = { Home.folder, camera }
@@ -1713,7 +1587,6 @@ function Home.alive(n)
 	return n.alive and n.model.Parent ~= nil and n.hum.Health > 0
 end
 
--- точка земли под pos (и то, на что она попала)
 function Home.groundAt(pos)
 	Home.rayParams.FilterDescendantsInstances = Home.filter()
 	local hit = workspace:Raycast(pos + Vector3.new(0, 30, 0), Vector3.new(0, -80, 0), Home.rayParams)
@@ -1723,20 +1596,17 @@ function Home.groundAt(pos)
 	return nil, nil
 end
 
--- по верху украшений (камень, ящик…) жители не ходят
 function Home.blocked(inst)
 	local m = inst and inst:FindFirstAncestorOfClass("Model")
 	return m ~= nil and m.Parent == railsFolder and m:GetAttribute("Kind") == "decor"
 end
 
--- между a и b нет преград
 function Home.clear(a, b)
 	Home.rayParams.FilterDescendantsInstances = Home.filter()
 	local from, to = a + Vector3.new(0, 2.2, 0), b + Vector3.new(0, 2.2, 0)
 	return workspace:Raycast(from, to - from, Home.rayParams) == nil
 end
 
--- случайная точка рядом с center, куда можно дойти по прямой
 function Home.pick(n, center, radius)
 	local baseY = n.door.pos0.Y
 	for _ = 1, 8 do
@@ -1750,7 +1620,6 @@ function Home.pick(n, center, radius)
 	return nil
 end
 
--- звук у жителя (звучит из его тела)
 function Home.getSound(n, key)
 	local s = n.sounds[key]
 	if not s then
@@ -1767,7 +1636,6 @@ function Home.say(n, key)
 	Home.getSound(n, key):Play()
 end
 
--- мимика: key = "prescare" / "scared" / "wave" / "joy" / "terrified" / "laugh"; nil — обычное лицо
 function Home.setFace(n, key)
 	if n.faceKey == key then
 		return
@@ -1798,7 +1666,6 @@ function Home.stop(n, name)
 	end
 end
 
--- плавно повернуться лицом к точке
 function Home.face(n, pos)
 	local root = n.root
 	n.hum.AutoRotate = false
@@ -1817,7 +1684,6 @@ function Home.face(n, pos)
 	n.hum.AutoRotate = true
 end
 
--- руки вверх (испуг): поворачиваем «плечи» R6-скелета
 function Home.armsUp(n, on)
 	n.c0 = n.c0 or {}
 	for _, name in ipairs({ "Right Shoulder", "Left Shoulder" }) do
@@ -1828,7 +1694,7 @@ function Home.armsUp(n, on)
 		end
 	end
 end
--- ждём seconds; false — если прервало событие (помахать / испугаться) или жителя уже нет
+
 function Home.pause(n, seconds)
 	local t0 = os.clock()
 	while os.clock() - t0 < seconds do
@@ -1840,7 +1706,6 @@ function Home.pause(n, seconds)
 	return true
 end
 
--- облачко над головой («Hi!»)
 function Home.bubble(n, text)
 	local head = n.model:FindFirstChild("Head")
 	if not head then
@@ -1869,7 +1734,6 @@ function Home.bubble(n, text)
 	end)
 end
 
--- постоять: если рядом ты — повернуться к тебе, а не пялиться в стену
 function Home.idle(n, seconds)
 	local pp = Home.playerPos()
 	if pp and n.seen and (pp - n.root.Position).Magnitude < 16 and math.random() < 0.6 then
@@ -1888,10 +1752,10 @@ function Home.walkRaw(n, target, stopDist, timeout)
 		if not Home.alive(n) then
 			return "dead"
 		end
-		hum.WalkSpeed = (n.speed or Home.WALK) * (n.fast and Home.FAST or 1) -- в панике и при испуге бегут быстрее
+		hum.WalkSpeed = (n.speed or Home.WALK) * (n.fast and Home.FAST or 1)
 		if n.event or (n.pending and not n.lock and not n.panic and os.clock() >= n.pendingAt) then
 			hum:MoveTo(root.Position)
-			return "event" -- событие или пора идти учиться
+			return "event"
 		end
 		local now = os.clock()
 		local p = root.Position
@@ -1904,22 +1768,19 @@ function Home.walkRaw(n, target, stopDist, timeout)
 		if (p - lastPos).Magnitude > 0.6 then
 			lastPos, lastMove = p, now
 		elseif now - lastMove > 1.2 then
-			hum.Jump = true -- попробуем перепрыгнуть препятствие
+			hum.Jump = true
 			if now - lastMove > 3 then
 				return "stuck"
 			end
 		end
 		if now >= nextMove then
-			hum:MoveTo(target) -- MoveTo «затухает» через 8 секунд, поэтому повторяем
+			hum:MoveTo(target)
 			nextMove = now + 1.5
 		end
 		task.wait(0.1)
 	end
 end
 
--- Обёртка над walkRaw. Если «дошли» мгновенно (уже стоим у цели), walkRaw возвращается без единой паузы —
--- и цикл, который вызывает walkTo снова и снова, мог крутиться без остановки и вешать всю игру.
--- Теперь каждый вызов гарантированно отдаёт управление хотя бы на 0.1 секунды.
 function Home.walkTo(n, target, stopDist, timeout)
 	local t0 = os.clock()
 	local r = Home.walkRaw(n, target, stopDist, timeout)
@@ -1928,9 +1789,7 @@ function Home.walkTo(n, target, stopDist, timeout)
 	end
 	return r
 end
-
 -- ----- Жители: поведение -----
--- подпрыгнуть от радости (со звуком)
 function Home.joy(n)
 	Home.say(n, "joy")
 	Home.play(n, "cheer")
@@ -1946,12 +1805,11 @@ function Home.joy(n)
 	Home.setFace(n, nil)
 end
 
--- испугался → посмотрел на тебя → засмеялся → пошёл гулять или к двери
 function Home.scared(n)
 	n.lock = true
 	local hum, root = n.hum, n.root
 	hum:MoveTo(root.Position)
-	Home.setFace(n, "prescare") -- готовится испугаться
+	Home.setFace(n, "prescare")
 	task.wait(0.35)
 	Home.setFace(n, "scared")
 	Home.say(n, "scare")
@@ -1963,7 +1821,7 @@ function Home.scared(n)
 			away = away.Unit
 			hum.Jump = true
 			local k = 0.6 + 0.4 * n.scale
-			root.AssemblyLinearVelocity = Vector3.new(away.X * 14 * k, 20 * k, away.Z * 14 * k) -- отскочил назад
+			root.AssemblyLinearVelocity = Vector3.new(away.X * 14 * k, 20 * k, away.Z * 14 * k)
 		end
 	end
 	task.wait(0.9)
@@ -1971,11 +1829,11 @@ function Home.scared(n)
 	Home.setFace(n, nil)
 	pp = Home.playerPos()
 	if pp then
-		Home.face(n, pp) -- посмотрел на тебя
+		Home.face(n, pp)
 	end
 	task.wait(0.8)
 	if Home.alive(n) then
-		Home.say(n, "laugh") -- посмеялся
+		Home.say(n, "laugh")
 		Home.play(n, "laugh")
 		Home.setFace(n, "laugh")
 		task.wait(2.4)
@@ -1983,17 +1841,12 @@ function Home.scared(n)
 		Home.setFace(n, nil)
 	end
 	if math.random() < 0.5 then
-		n.wantDoor = true -- пошёл к двери (выйти или вернуться), иначе просто продолжит гулять
+		n.wantDoor = true
 	end
 	n.lock = false
 end
 
 -- ----- Обучение: жители повторяют твой маршрут -----
--- Пока ты ходишь, скрипт записывает твой путь. Когда ты уходишь далеко от дома и там остаёшься (или возвращаешься),
--- из записи получается «урок»: жители выходят из дома, идут ТОЧНО по твоему маршруту (по тем же точкам),
--- на месте смотрят и удивляются, потом бегом возвращаются домой по тому же пути. Иногда ходят туда сами.
-
--- ближайшая дверь к точке (и расстояние до неё)
 function Home.nearestDoor(pos)
 	local best, bestD = nil, math.huge
 	for m, d in pairs(Home.doors) do
@@ -2007,17 +1860,11 @@ function Home.nearestDoor(pos)
 	return best, bestD
 end
 
--- вывод в консоль (Output) для отладки обучения; выключается через Home.DEBUG = false
 function Home.log(...)
 	if Home.DEBUG then
 		print("[Обучение]", ...)
 	end
 end
-
--- ----- Маршруты: ты сам записываешь путь, жители его повторяют -----
--- В разделе «НПС → Обучение» есть слоты маршрутов. В слоте нажимаешь ⏺, идёшь нужным путём и жмёшь «Сохранить» —
--- маршрут запоминается (и сохраняется вместе со слотом постройки). Кнопка ▶ отправляет жителей по этому маршруту:
--- они выходят из дома, идут точно по твоей линии (с подсветкой), на месте удивляются и бегом возвращаются.
 
 function Home.newRoutes()
 	local list = {}
@@ -2036,7 +1883,6 @@ function Home.routeLength(pts)
 	return len
 end
 
--- «урок» для жителей: точки маршрута и направление, куда смотреть на месте
 function Home.makeLesson(r, look)
 	local pts = r.pts
 	if not look and #pts >= 2 then
@@ -2046,7 +1892,6 @@ function Home.makeLesson(r, look)
 	r.lesson = { pts = pts, look = (look and look.Magnitude > 0.1) and look.Unit or nil }
 end
 
--- все готовые уроки (из слотов, где есть маршрут)
 function Home.lessonList()
 	local list = {}
 	for _, r in ipairs(Home.routes) do
@@ -2057,7 +1902,6 @@ function Home.lessonList()
 	return list
 end
 
--- маршрут ↔ строка (для сохранения вместе с постройкой)
 function Home.packRoute(pts)
 	local parts = {}
 	for i, p in ipairs(pts) do
@@ -2080,7 +1924,6 @@ function Home.unpackRoute(str)
 	return pts
 end
 
--- запись маршрута из сохранения: { 0, 0, 0, 0, 6, имя, "x,y,z;x,y,z;…", номер слота }
 function Home.loadRoute(r)
 	local i = r[8]
 	if type(i) ~= "number" or i < 1 or i > Home.ROUTE_SLOTS then
@@ -2097,7 +1940,6 @@ function Home.loadRoute(r)
 	end
 end
 
--- забываем маршруты (при смене слота постройки или очистке); если шла запись — она отменяется
 function Home.resetRoutes()
 	Home.rec = nil
 	Home.routes = Home.newRoutes()
@@ -2110,7 +1952,6 @@ function Home.resetRoutes()
 	end
 end
 
--- начать запись маршрута в слот
 function Home.startRecord(slot)
 	Home.rec = { slot = slot, pts = {}, length = 0, look = nil }
 	if Home.ui then
@@ -2120,7 +1961,6 @@ function Home.startRecord(slot)
 	toast("Запись пошла: пройди нужный путь и нажми «Сохранить»", C.bad)
 end
 
--- закончить запись; save = true — сохранить в слот. Возвращает true, если маршрут сохранён.
 function Home.stopRecord(save)
 	local rec = Home.rec
 	if not rec then
@@ -2148,7 +1988,6 @@ function Home.stopRecord(save)
 	return saved
 end
 
--- пока идёт запись: добавляем точки твоего пути (каждый тик)
 function Home.recordStep(now)
 	local rec = Home.rec
 	if not rec then
@@ -2161,7 +2000,7 @@ function Home.recordStep(now)
 		return
 	end
 	Home.rayParams.FilterDescendantsInstances = Home.filter()
-	local hit = workspace:Raycast(root.Position, Vector3.new(0, -12, 0), Home.rayParams) -- точка земли под тобой
+	local hit = workspace:Raycast(root.Position, Vector3.new(0, -12, 0), Home.rayParams)
 	if not hit then
 		return
 	end
@@ -2175,16 +2014,15 @@ function Home.recordStep(now)
 		if #rec.pts >= Home.MAX_TRAIL then
 			toast("Маршрут достиг предельной длины — сохраняю", C.warn)
 			if Home.stopRecord(true) then
-				Home.needSave = true -- сохранить в данные слота (это делает основной цикл)
+				Home.needSave = true
 			end
 			return
 		end
 	end
 	local lv = root.CFrame.LookVector
-	rec.look = Vector3.new(lv.X, 0, lv.Z) -- куда ты смотришь: так же будут смотреть жители на месте
+	rec.look = Vector3.new(lv.X, 0, lv.Z)
 end
--- отправить жителей по готовому уроку (каждый стартует чуть позже остальных; кто уже учится — не трогаем).
--- Возвращает, скольким жителям дали задание.
+-- отправить жителей по готовому уроку
 function Home.dispatch(lesson)
 	local count = 0
 	for _, n in ipairs(Home.npcs) do
@@ -2201,7 +2039,6 @@ function Home.dispatch(lesson)
 	return count
 end
 
--- кнопка ▶ в слоте: отправить жителей по сохранённому маршруту
 function Home.sendRoute(i)
 	local r = Home.routes[i]
 	if not r or #r.pts < Home.ROUTE_MIN or not r.lesson then
@@ -2217,7 +2054,6 @@ function Home.sendRoute(i)
 	end
 end
 
--- на сколько корень (HumanoidRootPart) жителя выше земли, когда он стоит (считаем по ногам)
 function Home.liftOf(n)
 	local leg = n.model:FindFirstChild("Left Leg")
 	if leg and leg:IsA("BasePart") then
@@ -2226,9 +2062,7 @@ function Home.liftOf(n)
 	return 3 * (n.scale or 1)
 end
 
--- идти ТОЧНО по маршруту; reverse — с конца в начало. true — дошёл до конца.
--- Житель не «ищет дорогу», а скользит вдоль самой линии маршрута: корень закреплён и двигается по твоим точкам,
--- а ноги сами идут (анимация ходьбы). Поэтому он не застревает, не сворачивает и идёт ровно там, где шёл ты.
+-- идти ТОЧНО по маршруту
 function Home.followRoute(n, pts, reverse)
 	local root = n.root
 	local route = {}
@@ -2253,7 +2087,7 @@ function Home.followRoute(n, pts, reverse)
 	local A = n.anim
 	n.hum:MoveTo(root.Position)
 	root.Anchored = true
-	n.routeMove = true -- пока идёт по маршруту, походкой управляю я (а не событие Running)
+	n.routeMove = true
 	if A.idle then
 		A.idle:Stop(0.15)
 	end
@@ -2277,7 +2111,7 @@ function Home.followRoute(n, pts, reverse)
 	local s, i, heading = 0, 1, nil
 	while true do
 		if not Home.alive(n) or n.panic or not n.door.model.Parent then
-			return finish(false) -- паника, дверь убрали или жителя нет — обучение прерывается
+			return finish(false)
 		end
 		local dt = math.min(RunService.Heartbeat:Wait(), 0.1)
 		local speed = (n.speed or Home.WALK) * (n.fast and Home.FAST or 1)
@@ -2290,7 +2124,6 @@ function Home.followRoute(n, pts, reverse)
 		local pos = a:Lerp(b, seg > 0 and (s - cum[i]) / seg or 1)
 		local dir = Vector3.new(b.X - a.X, 0, b.Z - a.Z)
 		if dir.Magnitude > 0.01 then
-			-- поворачивается плавно, чтобы на изгибах не дёргался
 			heading = heading and heading:Lerp(dir.Unit, math.min(1, dt * 10)) or dir.Unit
 		end
 		local p3 = Vector3.new(pos.X, pos.Y + n.lift, pos.Z)
@@ -2309,7 +2142,6 @@ function Home.followRoute(n, pts, reverse)
 end
 
 -- «учёба»: выйти из дома → пройти по маршруту → на месте удивиться → бегом обратно домой.
--- Пока житель учится, он подсвечен (Highlight), чтобы его было видно.
 function Home.study(n, lesson)
 	local d = n.door
 	n.lock = true
@@ -2327,7 +2159,6 @@ function Home.study(n, lesson)
 			n.studyHL = nil
 		end
 	end
-	-- маршрут начинаем с первой точки, которая уже снаружи дома (по ту сторону двери, где коврик)
 	local first = 1
 	for i, p in ipairs(lesson.pts) do
 		if (p - d.pos0):Dot(d.back) < -1 then
@@ -2353,7 +2184,7 @@ function Home.study(n, lesson)
 	if not Home.alive(n) or n.panic or not d.model.Parent then
 		return finish()
 	end
-	-- 2) к началу маршрута (если не дошёл за разумное время — переносим к началу, чтобы дальше всё шло ровно)
+	-- 2) к началу маршрута
 	local r = Home.walkTo(n, pts[1], 2.5, 25)
 	if r ~= "ok" and Home.alive(n) and not n.panic then
 		n.root.CFrame = CFrame.new(pts[1] + Vector3.new(0, n.lift or 3, 0))
@@ -2395,7 +2226,6 @@ function Home.study(n, lesson)
 end
 
 -- ----- Чужие рядом: чужой NPC пугает, объект с AnimationController вызывает панику -----
--- что это за модель: "npc" — человек (Humanoid), "obj" — объект с AnimationController, "none" — просто модель
 function Home.kindOf(model, now)
 	local c = Home.kindCache[model]
 	if c and now - c.at < 4 then
@@ -2413,12 +2243,11 @@ function Home.kindOf(model, now)
 	return kind, hum
 end
 
--- ищем рядом чужих: позиция ближайшего чужого NPC (FEAR_RADIUS) и ближайшего объекта с AnimationController (ALARM_RADIUS)
 function Home.scan(n, now)
 	local filter = { Home.folder, camera, railsFolder }
 	for _, pl in ipairs(Players:GetPlayers()) do
 		if pl.Character then
-			filter[#filter + 1] = pl.Character -- игроки — это не «чужие NPC»
+			filter[#filter + 1] = pl.Character
 		end
 	end
 	Home.overlap.FilterDescendantsInstances = filter
@@ -2428,7 +2257,6 @@ function Home.scan(n, now)
 	local checked = {}
 	local npcPos, npcDist, objPos, objDist
 	for _, part in ipairs(parts) do
-		-- AnimationController может лежать прямо в детали
 		if part:FindFirstChildOfClass("AnimationController") and not part:FindFirstAncestorOfClass("Model") then
 			local dist = (part.Position - center).Magnitude
 			if dist <= Home.ALARM_RADIUS and (not objDist or dist < objDist) then
@@ -2459,7 +2287,6 @@ function Home.scan(n, now)
 	return npcPos, objPos
 end
 
--- куда бежать от угрозы: в сторону от неё, по прямой без преград
 function Home.fleePoint(n, threat)
 	local p = n.root.Position
 	local away = Vector3.new(p.X - threat.X, 0, p.Z - threat.Z)
@@ -2478,7 +2305,6 @@ function Home.fleePoint(n, threat)
 	return nil
 end
 
--- чужой NPC рядом: испугался, вскрикнул и убежал от него (вдвое быстрее)
 function Home.fear(n, from)
 	n.lock = true
 	n.lastFear = os.clock()
@@ -2492,7 +2318,7 @@ function Home.fear(n, from)
 	hum.Jump = true
 	task.wait(0.5)
 	Home.armsUp(n, false)
-	Home.setFace(n, "terrified") -- убегает перепуганный
+	Home.setFace(n, "terrified")
 	n.fast = true
 	local t0 = os.clock()
 	local laps = 0
@@ -2500,29 +2326,27 @@ function Home.fear(n, from)
 		laps += 1
 		local threat = n.threat or from
 		if (root.Position - threat).Magnitude > Home.FEAR_RADIUS + 8 then
-			break -- убежал достаточно далеко
+			break
 		end
 		local target = Home.fleePoint(n, threat)
 		if not target then
-			-- бежать некуда (стены): жмётся к двери и пережидает
 			target = (n.place == "in") and n.door.inGate or n.door.outGate
 		end
 		Home.walkTo(n, target, 2, 3)
-		task.wait(0.15) -- каждый круг цикла обязательно отдаёт управление — раньше здесь игра зависала
+		task.wait(0.15)
 	end
-	n.lastFear = os.clock() -- пауза до следующего испуга считается с конца бегства
+	n.lastFear = os.clock()
 	n.fast = n.panic == true
 	Home.setFace(n, n.panic and "terrified" or nil)
 	if n.place == "out" then
-		n.wantDoor = true -- если был на улице, потом возвращается к двери
+		n.wantDoor = true
 	end
 	n.lock = false
 end
 
--- паника (рядом объект с AnimationController): бегом к двери — снаружи заходят внутрь, а те, кто уже внутри, жмутся у двери
 function Home.panicStep(n)
 	local d = n.door
-	Home.setFace(n, "terrified") -- перепугался
+	Home.setFace(n, "terrified")
 	if n.place == "out" then
 		local r = Home.walkTo(n, d.outGate, 1.5, 14)
 		if r == "ok" then
@@ -2566,7 +2390,6 @@ function Home.react(n)
 	end
 end
 
--- пройти через дверь: открыть, пройти по оси двери, закрыть за собой
 function Home.passDoor(n, fromGate, toGate)
 	local d = n.door
 	Home.setOpen(d, true, 5)
@@ -2582,12 +2405,11 @@ function Home.passDoor(n, fromGate, toGate)
 	end)
 	return r == "ok"
 end
--- выйти погулять
 function Home.exit(n)
 	local d = n.door
 	local r = Home.walkTo(n, d.inGate, 1.2, 16)
 	if r == "event" or r == "dead" then
-		return -- wantDoor остаётся: вернёмся к этому после реакции
+		return
 	end
 	if r ~= "ok" then
 		n.wantDoor = false
@@ -2602,7 +2424,6 @@ function Home.exit(n)
 	n.lock = false
 end
 
--- нагулялся: идёт к двери, прыгает от радости и заходит внутрь
 function Home.returnHome(n)
 	local d = n.door
 	local r = Home.walkTo(n, d.outGate, 1.5, 22)
@@ -2613,7 +2434,7 @@ function Home.returnHome(n)
 		n.wantDoor = false
 		n.backAt = os.clock() + 6
 		if (n.root.Position - d.outGate).Magnitude > 40 then
-			n.root.CFrame = CFrame.new(d.outGate + Vector3.new(0, 3, 0)) -- слишком далеко от дома и путь не нашёлся — возвращаем к двери
+			n.root.CFrame = CFrame.new(d.outGate + Vector3.new(0, 3, 0))
 		end
 		return
 	end
@@ -2645,7 +2466,7 @@ function Home.insideStep(n)
 	if target then
 		Home.walkTo(n, target, 1.5, 12)
 	end
-	Home.idle(n, 0.8 + math.random() * 2.5) -- постоял, огляделся
+	Home.idle(n, 0.8 + math.random() * 2.5)
 end
 
 function Home.outsideStep(n)
@@ -2663,7 +2484,6 @@ function Home.outsideStep(n)
 	Home.idle(n, 0.8 + math.random() * 2.5)
 end
 
--- дверь убрали: идём к ближайшей оставшейся, а если дверей нет — житель исчезает
 function Home.rehome(n)
 	local best, bestD
 	for m, d in pairs(Home.doors) do
@@ -2685,14 +2505,12 @@ function Home.rehome(n)
 	n.backAt = os.clock() + math.random(8, 16)
 end
 
--- один «шаг» жизни жителя
 function Home.tick(n)
-	n.fast = n.panic == true -- в панике бегут вдвое быстрее
+	n.fast = n.panic == true
 	if not n.panic and n.faceKey == "terrified" and not n.lock then
-		Home.setFace(n, nil) -- паника кончилась — лицо снова обычное
+		Home.setFace(n, nil)
 	end
 	local now = os.clock()
-	-- иногда сам идёт на выученное место
 	if not n.pending and now >= n.nextVisit then
 		n.nextVisit = now + math.random(Home.VISIT_MIN, Home.VISIT_MAX)
 		local lessons = Home.lessonList()
@@ -2710,7 +2528,7 @@ function Home.tick(n)
 	elseif n.pending and now >= n.pendingAt then
 		local lesson = n.pending
 		n.pending = nil
-		Home.study(n, lesson) -- идёт учиться по твоему маршруту
+		Home.study(n, lesson)
 	elseif n.place == "in" then
 		Home.insideStep(n)
 	else
@@ -2723,7 +2541,6 @@ function Home.run(n)
 	while Home.alive(n) do
 		local ok, err = pcall(Home.tick, n)
 		if not ok then
-			-- что-то пошло не так: пишем в консоль, сбрасываем состояние и продолжаем жить
 			warn("Жители: ошибка в поведении:", err)
 			n.lock, n.event, n.fast = false, nil, false
 			if n.studyHL then
@@ -2739,13 +2556,11 @@ function Home.run(n)
 	end
 end
 
--- ----- Жители: зрение (видят тебя → машут; слишком резко появился → пугаются) -----
 function Home.perceive(n, now, dt)
 	local proot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
 	if not proot or not Home.alive(n) then
 		return
 	end
-	-- упал с карты — вернём к двери
 	if n.root.Position.Y < n.door.pos0.Y - 80 then
 		n.model:PivotTo(CFrame.new(n.door.inGate + Vector3.new(0, 4, 0)))
 		return
@@ -2754,13 +2569,12 @@ function Home.perceive(n, now, dt)
 	local to = proot.Position - n.root.Position
 	local dist = to.Magnitude
 	local flat = Vector3.new(to.X, 0, to.Z)
-	local visible = dist < Home.SEE and flat.Magnitude > 0.1 and n.root.CFrame.LookVector:Dot(flat.Unit) > 0.5 -- видит в пределах ±60°
+	local visible = dist < Home.SEE and flat.Magnitude > 0.1 and n.root.CFrame.LookVector:Dot(flat.Unit) > 0.5
 	if visible then
 		Home.rayParams.FilterDescendantsInstances = Home.filter()
 		local target = proot.Position + Vector3.new(0, 1, 0)
-		visible = workspace:Raycast(eye, target - eye, Home.rayParams) == nil -- стены загораживают
+		visible = workspace:Raycast(eye, target - eye, Home.rayParams) == nil
 	end
-	-- как быстро именно ТЫ приближаешься к жителю (его собственная ходьба не считается)
 	local ppos = proot.Position
 	local pclosing = 0
 	if n.prevP then
@@ -2776,26 +2590,22 @@ function Home.perceive(n, now, dt)
 	elseif unseenFor > 1.5 then
 		n.seen = false
 	end
-	-- чужие рядом? проверяем раз в полсекунды
 	if now >= n.nextScan then
 		n.nextScan = now + 0.7 + math.random() * 0.3
 		local npcPos, objPos = Home.scan(n, now)
-		n.threat = npcPos -- позиция чужого NPC (или nil)
+		n.threat = npcPos
 		if objPos then
-			n.panicUntil = now + 3 -- паника длится, пока объект рядом, и ещё 3 секунды
+			n.panicUntil = now + 3
 		end
 	end
 	n.panic = now < n.panicUntil
 	if n.lock or n.event then
 		return
 	end
-	-- чужой NPC рядом → пугаются и убегают
 	if n.threat and not n.panic and now - n.lastFear > Home.FEAR_COOLDOWN then
 		n.event = { type = "fear", from = n.threat }
 		return
 	end
-	-- испуг — только если ты очень резко оказался рядом: подлетел на огромной скорости (телепорт, быстрая вагонетка)
-	-- или вынырнул из-за угла после долгого отсутствия. Обычная ходьба и бег не пугают.
 	if visible and not n.panic and dist < Home.SCARE_DIST and now - n.lastScare > Home.SCARE_COOLDOWN and now - n.bornAt > 8 then
 		local sudden = pclosing > Home.SCARE_SPEED
 			or (unseenFor > 3 and dist < Home.SCARE_DIST * 0.6 and pclosing > Home.SCARE_SPEED * 0.55)
@@ -2807,7 +2617,6 @@ function Home.perceive(n, now, dt)
 			end
 		end
 	end
-	-- заметил тебя → с шансом 40% здоровается: машет рукой и говорит «Hi!»
 	if visible and not n.panic and not wasSeen and now - n.lastWave > Home.WAVE_COOLDOWN then
 		n.lastWave = now
 		if math.random() < Home.WAVE_CHANCE then
@@ -2815,17 +2624,16 @@ function Home.perceive(n, now, dt)
 		end
 	end
 end
--- ----- Жители: появление и исчезновение -----
 function Home.newModel(i)
 	local rng = Random.new(os.time() + i * 101)
 	local legColors = {
 		Color3.fromRGB(50, 56, 80), Color3.fromRGB(70, 60, 50), Color3.fromRGB(40, 40, 46), Color3.fromRGB(90, 100, 120),
 	}
-	local legColor = legColors[rng:NextInteger(1, #legColors)] -- цвет ног (виден, если штаны не загрузятся)
+	local legColor = legColors[rng:NextInteger(1, #legColors)]
 	local pants = Home.PANTS[rng:NextInteger(1, #Home.PANTS)]
-	Home.shirtNext = Home.shirtNext % #Home.SHIRTS + 1 -- футболки по очереди, чтобы у соседей были разные
-	local shirtId = pants.shirt or Home.SHIRTS[Home.shirtNext] -- к некоторым штанам футболка полагается своя
-	Home.hairNext = Home.hairNext % #Home.HAIRS + 1 -- волосы тоже по очереди
+	Home.shirtNext = Home.shirtNext % #Home.SHIRTS + 1
+	local shirtId = pants.shirt or Home.SHIRTS[Home.shirtNext]
+	Home.hairNext = Home.hairNext % #Home.HAIRS + 1
 	local hairId = Home.HAIRS[Home.hairNext]
 
 	local function build(asTShirt)
@@ -2833,7 +2641,7 @@ function Home.newModel(i)
 		desc.HeadColor = Home.SKIN
 		desc.LeftArmColor = Home.SKIN
 		desc.RightArmColor = Home.SKIN
-		desc.TorsoColor = Color3.fromRGB(245, 245, 245) -- фон под принтом футболки
+		desc.TorsoColor = Color3.fromRGB(245, 245, 245)
 		desc.LeftLegColor = legColor
 		desc.RightLegColor = legColor
 		desc.Pants = pants.id
@@ -2855,7 +2663,6 @@ function Home.newModel(i)
 
 	local model = build(true)
 	if model and not model:FindFirstChildOfClass("ShirtGraphic") then
-		-- футболка не появилась: вдруг это обычная рубашка — пробуем так
 		local alt = build(false)
 		if alt and alt:FindFirstChildOfClass("Shirt") then
 			model:Destroy()
@@ -2894,11 +2701,10 @@ function Home.loadAnims(n)
 			A[name].Priority = Enum.AnimationPriority.Action
 		end
 	end
-	-- ходит — играет походка, стоит — стойка
 	n.walking = false
 	n.hum.Running:Connect(function(speed)
 		if n.routeMove then
-			return -- по маршруту ходьбой управляет followRoute
+			return
 		end
 		local moving = speed > 0.5
 		if moving ~= n.walking then
@@ -2912,7 +2718,7 @@ function Home.loadAnims(n)
 			end
 		end
 		if moving and A.walk then
-			A.walk:AdjustSpeed(speed / (14.5 * n.scale)) -- у малыша шаг короче, ногами перебирает чаще
+			A.walk:AdjustSpeed(speed / (14.5 * n.scale))
 		end
 	end)
 end
@@ -2930,14 +2736,14 @@ end
 function Home.spawnNpc(index)
 	Home.spawning += 1
 	task.spawn(function()
-		local model = Home.newModel(index) -- создание модели занимает немного времени
+		local model = Home.newModel(index)
 		Home.spawning -= 1
 		if not model then
 			Home.failedAt = os.clock()
 			warn("Жители: не удалось создать модель человека — попробую позже")
 			return
 		end
-		local door = Home.pickDoor() -- за это время дверь могли убрать, поэтому выбираем заново
+		local door = Home.pickDoor()
 		if not door then
 			model:Destroy()
 			return
@@ -2948,7 +2754,6 @@ function Home.spawnNpc(index)
 			model:Destroy()
 			return
 		end
-		-- иногда житель — малыш (уменьшаем всю модель вместе со скелетом)
 		local smallCount = 0
 		for _, o in ipairs(Home.npcs) do
 			if o.small then
@@ -2978,7 +2783,7 @@ function Home.spawnNpc(index)
 			pending = nil, pendingAt = 0, nextVisit = os.clock() + math.random(Home.VISIT_MIN, Home.VISIT_MAX),
 			nextOut = os.clock() + math.random(8, 20), backAt = 0,
 			speed = Home.WALK * (0.85 + math.random() * 0.4) * (small and 1.1 or 1), bornAt = os.clock(),
-			small = small, scale = scale, pitch = small and (1 + (1 - scale) * 0.7) or (0.92 + math.random() * 0.12), -- у малышей голос повыше
+			small = small, scale = scale, pitch = small and (1 + (1 - scale) * 0.7) or (0.92 + math.random() * 0.12),
 		}
 		local head = model:FindFirstChild("Head")
 		local decal = head and (head:FindFirstChild("face") or head:FindFirstChildOfClass("Decal"))
@@ -2986,14 +2791,13 @@ function Home.spawnNpc(index)
 			decal = make("Decal", { Name = "face", Face = Enum.NormalId.Front, Texture = "" }, head)
 		end
 		n.faceDecal = decal
-		n.faceNormal = decal and decal.Texture or "" -- обычное лицо
+		n.faceNormal = decal and decal.Texture or ""
 		hum.Died:Connect(function()
 			n.alive = false
 		end)
-		n.lift = Home.liftOf(n) -- высота корня над землёй (нужна, чтобы ходить по маршруту)
+		n.lift = Home.liftOf(n)
 		Home.loadAnims(n)
 		Home.npcs[#Home.npcs + 1] = n
-		-- заранее загружаем звуки, чтобы первый раз они не запаздывали
 		local list = {}
 		for key in pairs(Home.SOUNDS) do
 			list[#list + 1] = Home.getSound(n, key)
@@ -3016,7 +2820,6 @@ function Home.despawn(n)
 	n.model:Destroy()
 end
 
--- раз в секунду: есть двери — должны быть жители, нет дверей — жителей нет
 function Home.sync(now)
 	local _, doorCount = Home.pickDoor()
 	local want = (doorCount > 0) and Home.MAX_NPC or 0
@@ -3043,9 +2846,9 @@ function Home.step(dt)
 	Home.acc = 0
 	local now = os.clock()
 	Home.stepDoors(now)
-	local ok, err = pcall(Home.recordStep, now) -- если идёт запись маршрута — добавляем точки
+	local ok, err = pcall(Home.recordStep, now)
 	if not ok and not Home.recordErr then
-		Home.recordErr = true -- пишем только один раз, чтобы не засорять консоль
+		Home.recordErr = true
 		warn("[Обучение] ошибка записи маршрута:", err)
 	end
 	if Home.rec and Home.ui then
@@ -3061,8 +2864,6 @@ function Home.step(dt)
 end
 RunService.Heartbeat:Connect(Home.step)
 -- ===== Скины: модели рельс и вагонеток =====
--- Рельса-скин — это обычная рельса, у которой перекрашены детали и добавлены новые. Вагонетка-скин собирается заново.
--- Всё делается прямо в скрипте (ничего не грузится по ID).
 do
 	local PLASTIC, SMOOTH, NEON = Enum.Material.Plastic, Enum.Material.SmoothPlastic, Enum.Material.Neon
 	local METAL, WOOD, GLASS = Enum.Material.Metal, Enum.Material.Wood, Enum.Material.Glass
@@ -3073,7 +2874,6 @@ do
 		return Color3.fromRGB(r, g, b)
 	end
 
-	-- перекрасить все детали рельсы с таким именем
 	local function recolor(m, name, color, material, studs)
 		for _, p in ipairs(m:GetChildren()) do
 			if p:IsA("BasePart") and p.Name == name then
@@ -3082,13 +2882,12 @@ do
 					p.Material = material
 				end
 				if studs then
-					p.TopSurface = Enum.SurfaceType.Studs -- «шишечки» как в старом Роблоксе
+					p.TopSurface = Enum.SurfaceType.Studs
 				end
 			end
 		end
 	end
 
-	-- вертикальный цилиндр и эллипсоид
 	local function disc(m, name, height, diam, cf, color, material)
 		local p = newPart(m, name, Vector3.new(height, diam, diam), cf * CFrame.Angles(0, 0, math.rad(90)), color, material, false)
 		p.Shape = Enum.PartType.Cylinder
@@ -3100,7 +2899,6 @@ do
 		return p
 	end
 
-	-- точка на пути рельсы (в её локальных координатах) на расстоянии s от начала
 	local function sampleLocal(d, s)
 		local pts = d.pts
 		local acc = 0
@@ -3114,7 +2912,6 @@ do
 		end
 	end
 
-	-- расставить что-нибудь вдоль пути рельсы каждые step студов: fn(номер, CFrame с осью вдоль пути)
 	local function along(kind, step, fn)
 		local d = Geo.localData(kind)
 		local total = 0
@@ -3130,7 +2927,6 @@ do
 		end
 	end
 
-	-- анимация модели (вызывается каждый кадр из главного цикла); в окнах предпросмотра анимации выключены
 	function Skins.setAnim(model, fn)
 		if Skins.noAnim then
 			return
@@ -3165,7 +2961,7 @@ do
 		recolor(m, "Fill", rgb(110, 76, 50), Enum.Material.CorrodedMetal)
 		recolor(m, "Sleeper", rgb(70, 48, 34), WOOD)
 		recolor(m, "Steel", rgb(150, 88, 50), Enum.Material.CorrodedMetal)
-		along(kind, 0.9, function(_, cf) -- пятна ржавчины
+		along(kind, 0.9, function(_, cf)
 			newPart(m, "Rust", Vector3.new(rng:NextNumber(0.3, 0.7), 0.04, rng:NextNumber(0.3, 0.8)),
 				cf * CFrame.new(rng:NextNumber(-1.3, 1.3), 0.23, 0) * CFrame.Angles(0, rng:NextNumber(0, 3), 0),
 				rgb(176, 96, 38), Enum.Material.CorrodedMetal, false)
@@ -3175,7 +2971,7 @@ do
 	S.break_rail = function(m, kind)
 		recolor(m, "Base", rgb(140, 130, 112), Enum.Material.Slate)
 		recolor(m, "Steel", rgb(170, 160, 150), METAL)
-		along(kind, 1.1, function(_, cf) -- трещинки
+		along(kind, 1.1, function(_, cf)
 			newPart(m, "Crack", Vector3.new(0.06, 0.04, rng:NextNumber(0.5, 1.1)),
 				cf * CFrame.new(rng:NextNumber(-1.4, 1.4), 0.23, 0) * CFrame.Angles(0, rng:NextNumber(-0.7, 0.7), 0),
 				rgb(32, 30, 28), SMOOTH, false)
@@ -3189,10 +2985,10 @@ do
 		recolor(m, "Steel", rgb(214, 222, 236), METAL)
 		local gold, teal = rgb(255, 196, 70), rgb(60, 220, 200)
 		along(kind, 0.8, function(k, cf)
-			if k % 2 == 1 then -- пунктир по оси, как разметка на дороге
+			if k % 2 == 1 then
 				newPart(m, "Lane", Vector3.new(0.14, 0.04, 0.4), cf * CFrame.new(0, 0.23, 0), rgb(255, 220, 90), SMOOTH, false)
 			end
-			for _, sx in ipairs({ -1, 1 }) do -- узор из ромбиков по краям
+			for _, sx in ipairs({ -1, 1 }) do
 				newPart(m, "Pattern", Vector3.new(0.34, 0.05, 0.34), cf * CFrame.new(sx * 1.62, 0.24, 0) * CFrame.Angles(0, math.rad(45), 0),
 					(k % 2 == 0) and gold or teal, NEON, false)
 				newPart(m, "Dot", Vector3.new(0.12, 0.05, 0.12), cf * CFrame.new(sx * 1.25, 0.24, 0), WHITE, SMOOTH, false)
@@ -3205,13 +3001,13 @@ do
 		recolor(m, "Fill", rgb(26, 18, 34), Enum.Material.Slate)
 		recolor(m, "Sleeper", rgb(12, 10, 14), SMOOTH)
 		recolor(m, "Steel", rgb(70, 40, 90), NEON)
-		for _, p in ipairs(m:GetChildren()) do -- перекошенные шпалы: рельса «выглядит странно»
+		for _, p in ipairs(m:GetChildren()) do
 			if p:IsA("BasePart") and p.Name == "Sleeper" then
 				p.CFrame = p.CFrame * CFrame.Angles(rng:NextNumber(-0.06, 0.06), rng:NextNumber(-0.25, 0.25), rng:NextNumber(-0.06, 0.06))
 			end
 		end
 		local eyes = {}
-		along(kind, 2.2, function(_, cf) -- красные «глаза» на рельсе, они моргают
+		along(kind, 2.2, function(_, cf)
 			eyes[#eyes + 1] = newPart(m, "Eye", Vector3.new(0.22, 0.22, 0.05), cf * CFrame.new(rng:NextNumber(-1.2, 1.2), 0.3, 0),
 				rgb(255, 30, 30), NEON, false)
 		end)
@@ -3233,7 +3029,7 @@ do
 		recolor(m, "Sleeper", rgb(110, 70, 255), NEON)
 		recolor(m, "Steel", rgb(90, 230, 255), NEON)
 		local orbs = {}
-		along(kind, 1.6, function(k, cf) -- светящиеся шарики-«невесомость» по бокам
+		along(kind, 1.6, function(k, cf)
 			orbs[#orbs + 1] = blob(m, "Orb", Vector3.new(0.35, 0.35, 0.35), cf * CFrame.new((k % 2 == 0) and 1.6 or -1.6, 0.8, 0),
 				rgb(160, 220, 255), NEON)
 		end)
@@ -3251,7 +3047,7 @@ do
 		recolor(m, "Sleeper", rgb(0, 255, 255), NEON)
 		recolor(m, "Steel", rgb(255, 0, 170), NEON)
 		local pal = { rgb(255, 0, 170), rgb(0, 255, 255), rgb(255, 255, 255), rgb(60, 255, 90), rgb(10, 10, 14) }
-		along(kind, 0.7, function(_, cf) -- тонкие «срезы» изображения
+		along(kind, 0.7, function(_, cf)
 			newPart(m, "Slice", Vector3.new(rng:NextNumber(0.5, 2.2), 0.04, rng:NextNumber(0.05, 0.18)),
 				cf * CFrame.new(rng:NextNumber(-1, 1), 0.24, rng:NextNumber(-0.3, 0.3)), pal[rng:NextInteger(1, #pal)], NEON, false)
 		end)
@@ -3261,7 +3057,7 @@ do
 				parts[#parts + 1] = p
 			end
 		end
-		Skins.setAnim(m, function(t) -- всё мерцает разными цветами
+		Skins.setAnim(m, function(t)
 			if t - last < 0.07 then
 				return
 			end
@@ -3280,13 +3076,13 @@ do
 		recolor(m, "Fill", rgb(54, 62, 46), Enum.Material.Slate)
 		recolor(m, "Sleeper", rgb(24, 24, 26), SMOOTH)
 		recolor(m, "Steel", rgb(150, 154, 140), METAL)
-		along(kind, 0.8, function(k, cf) -- жёлто-чёрные предупреждающие полоски по краям
+		along(kind, 0.8, function(k, cf)
 			for _, sx in ipairs({ -1, 1 }) do
 				newPart(m, "Hazard", Vector3.new(0.3, 0.05, 0.4), cf * CFrame.new(sx * 1.75, 0.24, 0),
 					(k % 2 == 0) and rgb(255, 205, 40) or rgb(24, 24, 26), SMOOTH, false)
 			end
 		end)
-		disc(m, "MineBody", 0.3, 1.0, CFrame.new(2.3, 0.15, 0.6), rgb(60, 64, 56), METAL) -- мина сбоку с мигающим огоньком
+		disc(m, "MineBody", 0.3, 1.0, CFrame.new(2.3, 0.15, 0.6), rgb(60, 64, 56), METAL)
 		local led = blob(m, "MineLed", Vector3.new(0.22, 0.12, 0.22), CFrame.new(2.3, 0.34, 0.6), rgb(255, 30, 30), NEON)
 		Skins.setAnim(m, function(t)
 			led.Transparency = (math.sin(t * 6) > 0) and 0 or 0.8
@@ -3298,7 +3094,6 @@ do
 		recolor(m, "Fill", rgb(96, 66, 40), WOOD)
 		recolor(m, "Sleeper", rgb(60, 40, 28), WOOD)
 		recolor(m, "Steel", rgb(200, 200, 210), METAL)
-		-- молот: стойка сбоку, длинная рука и тяжёлая голова; рука крутится вокруг стойки
 		local PIV = CFrame.new(3.4, 1.9, -0.8)
 		disc(m, "TrapPost", 2.6, 0.5, CFrame.new(3.4, 1.3, -0.8), rgb(70, 70, 76), METAL)
 		local arm = newPart(m, "TrapArm", Vector3.new(3.4, 0.35, 0.35), PIV * CFrame.new(-1.7, 0, 0), rgb(110, 110, 120), METAL, false)
@@ -3317,18 +3112,18 @@ do
 		Skins.setAnim(m, function(_, dt)
 			if st.mode == "idle" then
 				st.angle += st.spin * dt
-			elseif st.mode == "safe" then -- рука уходит в сторону от рельсы
+			elseif st.mode == "safe" then
 				local target = math.floor(st.angle / (2 * math.pi) + 0.5) * 2 * math.pi
 				st.angle += (target - st.angle) * math.min(1, dt * 6)
-			elseif st.mode == "swing" then -- быстрый удар поперёк рельсы
+			elseif st.mode == "swing" then
 				st.angle = math.min(st.target, st.angle + 16 * dt)
 			end
 			local info = pieces[m]
 			place(info and info.cf or m:GetPivot())
 		end)
-	end
-		-- ---------- Вагонетки-скины ----------
-	local function cp(m, name, size, cf, color, material, shape) -- деталь вагонетки (без коллизии и запросов)
+    end
+    	-- ---------- Вагонетки-скины ----------
+	local function cp(m, name, size, cf, color, material, shape)
 		local p = newPart(m, name, size, cf, color, material or SMOOTH, false)
 		p.CanQuery = false
 		if shape then
@@ -3344,7 +3139,7 @@ do
 	local function wheel(m, x, y, z, r, color)
 		return cp(m, "Wheel", Vector3.new(0.4, r * 2, r * 2), CFrame.new(x, y, z), color or rgb(30, 30, 34), METAL, Enum.PartType.Cylinder)
 	end
-	local function blank() -- пустая вагонетка: точка (0,0,0) = верх рельсы, перед = -Z
+	local function blank()
 		local m = Instance.new("Model")
 		m.Name = "MineCart"
 		local pivot = cp(m, "Pivot", Vector3.new(0.2, 0.2, 0.2), CFrame.new(), WHITE, SMOOTH)
@@ -3353,7 +3148,6 @@ do
 		return m
 	end
 
-	-- маленькая фигурка тебя (копия твоего персонажа); если копия не получилась — фигурка из блоков
 	local function figurine(parent, cf)
 		local char = player.Character
 		local done = false
@@ -3426,17 +3220,15 @@ do
 		cblob(m, "Pillow", Vector3.new(1.5, 0.4, 0.8), CFrame.new(0, 1.45, 1.3), white, Enum.Material.Fabric)
 		cp(m, "HeadBoard", Vector3.new(2.4, 1.0, 0.15), CFrame.new(0, 1.55, 1.95), white, METAL)
 		cp(m, "FootBoard", Vector3.new(2.4, 0.7, 0.15), CFrame.new(0, 1.4, -1.95), white, METAL)
-		cp(m, "CrossV", Vector3.new(0.18, 0.55, 0.05), CFrame.new(0, 1.4, -2.06), rgb(230, 30, 40), NEON) -- красный крест
+		cp(m, "CrossV", Vector3.new(0.18, 0.55, 0.05), CFrame.new(0, 1.4, -2.06), rgb(230, 30, 40), NEON)
 		cp(m, "CrossH", Vector3.new(0.55, 0.18, 0.05), CFrame.new(0, 1.4, -2.06), rgb(230, 30, 40), NEON)
 		for _, sx in ipairs({ -1, 1 }) do
 			cp(m, "SideRail", Vector3.new(0.1, 0.45, 2.6), CFrame.new(sx * 1.2, 1.5, 0), steel, METAL)
 			wheel(m, sx * 1.15, 0.45, -1.4, 0.4, steel)
 			wheel(m, sx * 1.15, 0.45, 1.4, 0.4, steel)
 		end
-		-- капельница
 		cp(m, "IVPole", Vector3.new(0.1, 2.6, 0.1), CFrame.new(-1.5, 1.5, 1.2), steel, METAL)
 		cblob(m, "IVBag", Vector3.new(0.4, 0.6, 0.2), CFrame.new(-1.5, 2.9, 1.2), rgb(180, 230, 255), GLASS)
-		-- монитор с пульсом сбоку: на экране бежит линия кардиограммы, рядом бьётся сердечко
 		cp(m, "MonitorPost", Vector3.new(0.12, 2.0, 0.12), CFrame.new(2.1, 1.5, 0.2), steel, METAL)
 		cp(m, "Screen", Vector3.new(1.8, 1.1, 0.12), CFrame.new(2.1, 2.7, 0.2), rgb(10, 18, 14))
 		local dots = {}
@@ -3444,7 +3236,7 @@ do
 			dots[i] = cp(m, "Pulse", Vector3.new(0.08, 0.08, 0.05), CFrame.new(1.35 + i * 0.1, 2.7, 0.1), rgb(70, 255, 120), NEON)
 		end
 		local heart = cblob(m, "Heart", Vector3.new(0.35, 0.35, 0.1), CFrame.new(2.75, 3.05, 0.1), rgb(255, 50, 70), NEON)
-		local function ecg(p) -- форма одного удара сердца (p от 0 до 1)
+		local function ecg(p)
 			if p < 0.10 then return 0.15 * math.sin(p / 0.10 * math.pi)
 			elseif p < 0.20 then return 0
 			elseif p < 0.24 then return -0.2 * (p - 0.20) / 0.04
@@ -3461,7 +3253,7 @@ do
 			for i, d in ipairs(dots) do
 				d.CFrame = base * CFrame.new(1.35 + i * 0.1, 2.7 + ecg((i / 16 - phase) % 1) * 0.4, 0.1)
 			end
-			local s = 0.35 + 0.18 * ((phase > 0.25 and phase < 0.4) and 1 or 0) -- сердечко «стучит» в момент удара на экране
+			local s = 0.35 + 0.18 * ((phase > 0.25 and phase < 0.4) and 1 or 0)
 			heart.Size = Vector3.new(s, s, 0.1)
 			heart.CFrame = base * CFrame.new(2.75, 3.05, 0.1)
 		end)
@@ -3474,7 +3266,7 @@ do
 		local bark, leaf = rgb(70, 46, 28), rgb(64, 160, 58)
 		cp(m, "Log", Vector3.new(3.8, 1.5, 1.5), CFrame.new(0, 0.95, 0) * CFrame.Angles(0, math.rad(90), 0), bark, WOOD, Enum.PartType.Cylinder)
 		cp(m, "Trunk", Vector3.new(2.4, 0.8, 0.8), CFrame.new(0, 2.9, 1.3) * CFrame.Angles(0, 0, math.rad(90)), bark, WOOD, Enum.PartType.Cylinder)
-		cp(m, "Leaves", Vector3.new(2.2, 2.2, 2.2), CFrame.new(0, 4.6, 1.3), leaf, Enum.Material.Grass) -- два квадрата с разным поворотом
+		cp(m, "Leaves", Vector3.new(2.2, 2.2, 2.2), CFrame.new(0, 4.6, 1.3), leaf, Enum.Material.Grass)
 		cp(m, "Leaves", Vector3.new(2.2, 2.2, 2.2), CFrame.new(0, 4.6, 1.3) * CFrame.Angles(0, math.rad(45), 0), leaf, Enum.Material.Grass)
 		for _, sx in ipairs({ -1, 1 }) do
 			wheel(m, sx * 1.0, 0.35, -1.2, 0.35, rgb(60, 40, 26))
@@ -3489,7 +3281,7 @@ do
 		local m = blank()
 		local red, white = rgb(205, 36, 32), rgb(240, 240, 240)
 		local crate = cp(m, "Crate", Vector3.new(2.8, 1.5, 3.2), CFrame.new(0, 1.15, 0), red)
-		for _, sx in ipairs({ -1, 1 }) do -- белая полоса с надписью TNT с двух сторон
+		for _, sx in ipairs({ -1, 1 }) do
 			local band = cp(m, "Band", Vector3.new(0.06, 0.8, 2.2), CFrame.new(sx * 1.42, 1.2, 0), white)
 			local sg = make("SurfaceGui", {
 				Face = (sx > 0) and Enum.NormalId.Right or Enum.NormalId.Left,
@@ -3500,7 +3292,7 @@ do
 				TextColor3 = rgb(20, 20, 20), Text = "TNT",
 			}, sg)
 		end
-		for i = 1, 5 do -- связка динамита сверху
+		for i = 1, 5 do
 			disc(m, "Stick", 1.2, 0.32, CFrame.new(-0.8 + i * 0.27, 2.3, 1.0), red, SMOOTH)
 			disc(m, "StickBand", 0.12, 0.34, CFrame.new(-0.8 + i * 0.27, 2.3, 1.0), rgb(20, 20, 20), SMOOTH)
 		end
@@ -3513,7 +3305,7 @@ do
 		end
 		local beep = make("Sound", { SoundId = Skins.SOUNDS.beep, Volume = 0.25, RollOffMaxDistance = 60 }, crate)
 		local born, nextBeep = os.clock(), 0
-		Skins.setAnim(m, function() -- постоянно тихо пикает, чем дольше едешь — тем чаще
+		Skins.setAnim(m, function()
 			local now = os.clock()
 			if now >= nextBeep then
 				nextBeep = now + math.max(0.35, 1.1 - (now - born) * 0.02)
@@ -3563,7 +3355,7 @@ do
 					p.Color = rgb(120, 120, 126)
 				end
 				p.Material = PLASTIC
-				p.TopSurface = Enum.SurfaceType.Studs -- «шишечки» старого Роблокса
+				p.TopSurface = Enum.SurfaceType.Studs
 			end
 		end
 		return m
@@ -3585,7 +3377,7 @@ do
 		end
 		cp(m, "Wing", Vector3.new(2.4, 0.1, 0.6), CFrame.new(0, 1.62, 2.1), rgb(30, 30, 34), METAL)
 		m:SetAttribute("SeatY", 1.6)
-		m:SetAttribute("SpeedMul", 3.2) -- невероятно быстрая
+		m:SetAttribute("SpeedMul", 3.2)
 		return m
 	end
 
@@ -3597,11 +3389,10 @@ do
 				p.Material = METAL
 			end
 		end
-		for i = 1, 6 do -- шипы по краю
+		for i = 1, 6 do
 			cp(m, "Spike", Vector3.new(0.25, 0.25, 0.25), CFrame.new((i % 2 == 0) and 1.3 or -1.3, 2.35, -1.5 + math.floor((i - 1) / 2) * 1.5)
 				* CFrame.Angles(math.rad(45), math.rad(45), 0), rgb(200, 40, 40), METAL)
 		end
-		-- солнцезащитные очки на передней стенке (перед = -Z)
 		for _, sx in ipairs({ -1, 1 }) do
 			local lens = cblob(m, "Lens", Vector3.new(1.0, 0.7, 0.14), CFrame.new(sx * 0.72, 1.75, -1.86), rgb(8, 8, 10), SMOOTH)
 			lens.Reflectance = 0.3
@@ -3617,7 +3408,7 @@ do
 		local FAB = Enum.Material.Fabric
 		local cream, pink, mint = rgb(252, 238, 216), rgb(255, 186, 204), rgb(170, 224, 200)
 		cp(m, "Tub", Vector3.new(2.8, 0.9, 3.6), CFrame.new(0, 0.95, 0), cream, FAB)
-		for _, sx in ipairs({ -1, 1 }) do -- мягкие валики по краям
+		for _, sx in ipairs({ -1, 1 }) do
 			cblob(m, "Roll", Vector3.new(0.6, 0.6, 3.7), CFrame.new(sx * 1.4, 1.5, 0), pink, FAB)
 			wheel(m, sx * 1.15, 0.4, -1.2, 0.35, pink)
 			wheel(m, sx * 1.15, 0.4, 1.2, 0.35, pink)
@@ -3627,7 +3418,6 @@ do
 		end
 		cblob(m, "Cushion", Vector3.new(2.0, 0.5, 2.4), CFrame.new(0, 1.45, 0), mint, FAB)
 		cblob(m, "Blanket", Vector3.new(1.8, 0.3, 1.0), CFrame.new(0.2, 1.7, 0.6), pink, FAB)
-		-- куча маленьких фигурок тебя на мягких валиках
 		local spots = {
 			{ -1.4, -1.2, 0.5 }, { 1.4, -1.0, -0.5 }, { -1.4, 0.4, 0.8 }, { 1.4, 0.6, -0.8 }, { -0.7, 1.8, 3.0 }, { 0.7, -1.8, -0.3 },
 		}
@@ -3638,7 +3428,6 @@ do
 		return m
 	end
 
-	-- вагонетка с нужным скином (или обычная)
 	function Skins.newCart(id)
 		local def = id and Skins.defs[id]
 		local build = def and def.kind == "cart" and B[id]
@@ -3653,7 +3442,6 @@ do
 		return newCartModel()
 	end
 
-	-- модель для окон (без анимаций и звуков): рельса — прямой кусок, вагонетка — целиком
 	function Skins.preview(id)
 		local def = Skins.defs[id]
 		Skins.noAnim = true
@@ -3668,7 +3456,6 @@ do
 		return m
 	end
 
-	-- оформить рельсу скином (вызывается при создании рельсы)
 	function Skins.styleRail(model, kind, id)
 		local fn = S[id]
 		if fn then
@@ -3679,7 +3466,6 @@ do
 		end
 	end
 
-	-- чёрный Rig с красными глазами (для рельсы-кошмара); начало координат — у ног, лицо смотрит в -Z
 	function Skins.makeRig()
 		local m = Instance.new("Model")
 		m.Name = "Rig"
@@ -3722,7 +3508,6 @@ do
 		return 1 - (-2 * a + 2) ^ 3 / 2
 	end
 
-	-- запустить «таймлайн»: fn(время, последний_кадр) вызывается каждый кадр, потом done()
 	function Skins.run(duration, fn, done)
 		local t = 0
 		local conn
@@ -3741,7 +3526,6 @@ do
 		return conn
 	end
 
-	-- то же, но ждёт конца (только внутри task.spawn)
 	function Skins.runWait(duration, fn)
 		local co = coroutine.running()
 		Skins.run(duration, fn, function()
@@ -3750,7 +3534,6 @@ do
 		coroutine.yield()
 	end
 
-	-- звук в точке мира
 	function Skins.sound(pos, id, volume, pitch)
 		local p = Instance.new("Part")
 		p.Anchored, p.CanCollide, p.CanQuery, p.CanTouch, p.Transparency = true, false, false, false, 1
@@ -3762,7 +3545,6 @@ do
 		game:GetService("Debris"):AddItem(p, 8)
 	end
 
-	-- тряска камеры
 	Skins.shakeId = 0
 	function Skins.shake(duration, power)
 		Skins.shakeId += 1
@@ -3780,7 +3562,6 @@ do
 		end)
 	end
 
-	-- вспышка на весь экран
 	function Skins.flash(color, duration)
 		local gui = make("ScreenGui", {
 			Name = "RailFlash", ResetOnSpawn = false, IgnoreGuiInset = true, DisplayOrder = 899,
@@ -3794,7 +3575,6 @@ do
 		end)
 	end
 
-	-- взрыв: только картинка и звук (никому не вредит)
 	function Skins.boom(pos, size)
 		local e = Instance.new("Explosion")
 		e.Position = pos
@@ -3818,7 +3598,6 @@ do
 		Skins.sound(pos, Skins.SOUNDS.boom, 1.5)
 	end
 
-	-- глитч на экране на заданное время: разноцветные полосы, смещения и вспышки
 	function Skins.glitchScreen(duration)
 		local gui = make("ScreenGui", {
 			Name = "RailGlitchFX", ResetOnSpawn = false, IgnoreGuiInset = true, DisplayOrder = 900,
@@ -3856,7 +3635,6 @@ do
 		end)
 	end
 
-	-- «телепорт» вагонетки на другую рельсу / место пути
 	function Skins.warp(c, info, dir, s)
 		c.info, c.dir, c.s = info, dir, s
 		c.speed = 0
@@ -3866,7 +3644,6 @@ do
 		c.hold = os.clock() + 0.5
 	end
 
-	-- вагонетка выехала на новую рельсу (silent — только запомнить, без эффекта)
 	function Skins.entered(c, silent)
 		local info = c.info
 		c.trail[#c.trail + 1] = { info = info, dir = c.dir }
@@ -3894,7 +3671,7 @@ do
 	end
 
 	-- ---------- Эффекты рельс ----------
-	E.retro_rail = function(_, info) -- меняет цвет
+	E.retro_rail = function(_, info)
 		local pal = { rgb(40, 120, 230), rgb(40, 170, 80), rgb(245, 205, 48), rgb(230, 120, 30), rgb(200, 40, 28), rgb(150, 70, 200) }
 		local col = pal[math.random(#pal)]
 		for _, p in ipairs(info.model:GetChildren()) do
@@ -3904,7 +3681,7 @@ do
 		end
 	end
 
-	E.break_rail = function(_, info) -- рассыпается на много частей и плавно собирается обратно
+	E.break_rail = function(_, info)
 		local m, base = info.model, info.cf
 		local list = {}
 		for _, p in ipairs(m:GetChildren()) do
@@ -3937,10 +3714,10 @@ do
 		end)
 	end
 
-	E.ghost_rail = function(c, info) -- перед тобой появляется чёрный Rig с красными глазами, ты замедляешься, он резко исчезает
+	E.ghost_rail = function(c, info)
 		local pos, tan = Geo.samplePath(info, math.clamp(c.s + c.dir * 7, 0, info.len))
 		local at = pos + Vector3.new(0, 3.3, 0)
-		local back = Vector3.new(-tan.X, 0, -tan.Z) * c.dir -- смотрит на вагонетку
+		local back = Vector3.new(-tan.X, 0, -tan.Z) * c.dir
 		if back.Magnitude < 0.01 then
 			back = Vector3.new(0, 0, -1)
 		end
@@ -3950,14 +3727,14 @@ do
 		Skins.sound(at, Skins.SOUNDS.ghost, 1.3)
 		c.slowMul, c.slowUntil = 0.35, os.clock() + 1.3
 		local pivot = rig:GetPivot()
-		Skins.setAnim(rig, function() -- дрожит
+		Skins.setAnim(rig, function()
 			rig:PivotTo(pivot * CFrame.new((math.random() - 0.5) * 0.08, 0, (math.random() - 0.5) * 0.08))
 		end)
 		task.delay(1.15, function()
-			rig:Destroy() -- резко исчез
+			rig:Destroy()
 			Skins.shake(0.4, 1.2)
 			local m = info.model
-			if m.Parent then -- рельса «сходит с ума»: красно-чёрные вспышки
+			if m.Parent then
 				local saved = {}
 				for _, p in ipairs(m:GetChildren()) do
 					if p:IsA("BasePart") and p.Name ~= "Origin" then
@@ -3975,7 +3752,7 @@ do
 		end)
 	end
 
-	E.antigrav_rail = function(c, info) -- плавно поднимает вверх и крутит, потом резко роняет со звуком
+	E.antigrav_rail = function(c, info)
 		if c.float then
 			return
 		end
@@ -4001,7 +3778,7 @@ do
 			if final then
 				X = CFrame.new()
 			end
-			c.extra = (not final) and X or nil -- вагонетка остаётся на рельсе и поднимается вместе с ней
+			c.extra = (not final) and X or nil
 			if m.Parent then
 				m:PivotTo(X * info.cf)
 			end
@@ -4011,11 +3788,11 @@ do
 		end)
 	end
 
-	E.glitch_rail = function() -- на экране глитч на 1 секунду
+	E.glitch_rail = function()
 		Skins.glitchScreen(1.0)
 	end
 
-	E.mine_rail = function(c) -- к вагонетке крепится мина, потом взрыв и откат назад по пути
+	E.mine_rail = function(c)
 		if c.mine then
 			return
 		end
@@ -4051,18 +3828,18 @@ do
 			Skins.boom(pos, 1.0)
 			Skins.shake(0.8, 1.6)
 			Skins.flash(rgb(255, 220, 160), 0.5)
-			local e = c.trail[math.max(1, #c.trail - math.random(2, 4))] -- рельса, по которой ты уже проехал
+			local e = c.trail[math.max(1, #c.trail - math.random(2, 4))]
 			if e and e.info.model.Parent then
 				Skins.warp(c, e.info, e.dir, e.info.len / 2)
 			elseif c.startInfo and c.startInfo.model.Parent then
 				Skins.warp(c, c.startInfo, c.startDir, c.startS)
 			end
-			c.hold = os.clock() + 0.9 -- на секунду «зависаешь»
+			c.hold = os.clock() + 0.9
 			c.mine = false
 		end)
 	end
 
-	E.trap_rail = function(c, info) -- молот: повезёт — проедешь, не повезёт — откинет в сторону и вернёт в начало
+	E.trap_rail = function(c, info)
 		local st = Skins.trap[info.model]
 		if not st then
 			return
@@ -4086,7 +3863,7 @@ do
 			if cart ~= c then
 				return
 			end
-			st.target = math.ceil((st.angle - math.pi) / (2 * math.pi)) * 2 * math.pi + math.pi -- рука ложится поперёк рельсы
+			st.target = math.ceil((st.angle - math.pi) / (2 * math.pi)) * 2 * math.pi + math.pi
 			st.mode = "swing"
 			while st.angle < st.target - 0.001 and cart == c do
 				task.wait()
@@ -4103,14 +3880,13 @@ do
 			end, function()
 				c.extra = nil
 				if c.startInfo and c.startInfo.model.Parent then
-					Skins.warp(c, c.startInfo, c.startDir, c.startS) -- ты появляешься в самом начале
+					Skins.warp(c, c.startInfo, c.startDir, c.startS)
 				end
 				st.mode = "idle"
 			end)
 		end)
 	end
 
-	-- ТНТ-вагонетка: в конце пути взрыв, ты не умираешь, а «зависаешь» и возвращаешься в начало вместе с вагонеткой
 	function Skins.onEnd(c)
 		if c.skin ~= "tnt_cart" or c.exploding then
 			return false
@@ -4138,7 +3914,6 @@ function Shop.fmt(n)
 	return r
 end
 
--- сообщение «Ошибка: причина» (игра не ломается)
 function Shop.fail(reason)
 	Shop.lastError = "Ошибка: " .. tostring(reason)
 	warn("[Магазин] " .. Shop.lastError)
@@ -4150,7 +3925,7 @@ function Shop.fail(reason)
 	end
 end
 
--- ===== Локальная экономика (вместо серверного RailEconomyServer) =====
+-- ===== Локальная экономика (вместо серверного скрипта) =====
 local Economy = {}
 
 local function econPack(raw)
@@ -4277,7 +4052,6 @@ local ECONOMY_HANDLERS = {
 	Progress = Economy.Progress, BuyChest = Economy.BuyChest,
 }
 
--- вызов локального обработчика экономики; возвращает ответ или nil и причину ошибки
 function Shop.call(action, ...)
 	local fn = ECONOMY_HANDLERS[action]
 	if not fn then
@@ -4296,7 +4070,6 @@ function Shop.call(action, ...)
 	return res
 end
 
--- принять данные от сервера (монеты, скины, квесты)
 function Shop.apply(res)
 	local d = res and res.data
 	if type(d) ~= "table" then
@@ -4316,7 +4089,6 @@ function Shop.apply(res)
 	end
 end
 
--- старт: загружаем данные экономики из файла
 function Shop.load()
 	ensureDir()
 	local res, why = Shop.call("Load")
@@ -4353,7 +4125,6 @@ function Shop.claim(id)
 	end
 end
 
--- какой скин рельсы ставить вместе с этим инструментом
 function Shop.railSkin(tool)
 	if tool ~= "straight" and tool ~= "curve" and tool ~= "ramp" then
 		return nil
@@ -4365,7 +4136,6 @@ function Shop.railSkin(tool)
 	return nil
 end
 
--- прогресс квестов: копим и отправляем пачкой
 function Shop.progress(id, n)
 	Shop.pending[id] = (Shop.pending[id] or 0) + (n or 1)
 	if Shop.flushQueued then
@@ -4383,7 +4153,6 @@ function Shop.progress(id, n)
 	end)
 end
 
--- «дом для НПС»: дверь и хотя бы 4 стены
 function Shop.checkHouse()
 	if Shop.houseSent then
 		return
@@ -4405,7 +4174,6 @@ function Shop.checkHouse()
 	end
 end
 
--- что-то поставили: считаем рельсы для квеста и проверяем дом
 function Shop.onPlaced(tool)
 	if tool == "straight" or tool == "curve" or tool == "ramp" or tool == "loop" then
 		Shop.progress("rails", 1)
@@ -4414,7 +4182,6 @@ function Shop.onPlaced(tool)
 	end
 end
 
--- вагонетка доехала до конца пути (для квеста «прокатись от начала до конца»)
 function Shop.onRideEnd(c)
 	if (c.ridePieces or 0) >= 3 and (c.rideDist or 0) >= 30 then
 		c.ridePieces, c.rideDist = 0, 0
@@ -4448,7 +4215,6 @@ function Shop.newChest()
 	return m
 end
 
--- ViewportFrame с вращающейся моделью
 function Shop.addViewport(parent, model, pos, size)
 	local vp = make("ViewportFrame", {
 		Position = pos, Size = size, BackgroundTransparency = 1, Active = false,
@@ -4497,7 +4263,6 @@ function Shop.closeShopWindows(except)
 	end
 end
 
--- покупка сундука: локально списываются монеты и выбирается скин, клиент показывает, как сундук падает и открывается
 function Shop.buy()
 	if Shop.busy then
 		return
@@ -4510,11 +4275,11 @@ function Shop.buy()
 	local res, why = Shop.call("BuyChest")
 	if not res or not Skins.defs[res.skin] then
 		Shop.busy = false
-		Shop.fail(why or "не удалось выбрать предмет")
+		Shop.fail(why or "сервер не вернул предмет")
 		return
 	end
 	Shop.apply(res)
-	Shop.closeShopWindows() -- магазин закрывается
+	Shop.closeShopWindows()
 	task.spawn(function()
 		local ok, err = pcall(Shop.chestSequence, res.skin)
 		if not ok then
@@ -4524,7 +4289,6 @@ function Shop.buy()
 	end)
 end
 
--- сундук падает перед тобой, открывается, из него выскакивает предмет, подсвечивается, появляется карточка
 function Shop.chestSequence(skinId)
 	local def = Skins.defs[skinId]
 	local rar = Skins.RARITY[def.rarity]
@@ -4536,7 +4300,7 @@ function Shop.chestSequence(skinId)
 	flat = (flat.Magnitude > 0.1) and flat.Unit or Vector3.new(0, 0, -1)
 	local spot = from + flat * 11
 	local g = Home.groundAt(spot) or Vector3.new(spot.X, from.Y - 3, spot.Z)
-	local at = CFrame.lookAt(g, Vector3.new(from.X, g.Y, from.Z)) -- лицом к тебе
+	local at = CFrame.lookAt(g, Vector3.new(from.X, g.Y, from.Z))
 
 	local chest = Shop.newChest()
 	chest:PivotTo(at * CFrame.new(0, 40, 0))
@@ -4547,13 +4311,11 @@ function Shop.chestSequence(skinId)
 			lid[#lid + 1] = { part = p, rel = p.CFrame }
 		end
 	end
-	-- 1) очень плавно падает (замедляется к земле)
 	Skins.runWait(1.9, function(t)
 		chest:PivotTo(at * CFrame.new(0, 40 * (1 - Skins.easeOut(t / 1.9)), 0))
 	end)
 	Skins.shake(0.3, 0.5)
 	task.wait(0.25)
-	-- 2) открывается: крышка поворачивается назад, внутри загорается свет цвета редкости
 	local hinge = CFrame.new(0, 1.8, 1.2)
 	local glow = chest:FindFirstChild("Glow")
 	local light = glow and glow:FindFirstChildOfClass("PointLight")
@@ -4571,7 +4333,6 @@ function Shop.chestSequence(skinId)
 			light.Color = rar.color
 		end
 	end)
-	-- 3) плавно выскакивает предмет
 	local item = Skins.preview(skinId)
 	pcall(function()
 		item:ScaleTo(0.7)
@@ -4582,7 +4343,6 @@ function Shop.chestSequence(skinId)
 		local a = Skins.easeOut(t / 1.4)
 		item:PivotTo(CFrame.new(top + Vector3.new(0, 0.5 + 4.6 * a, 0)) * CFrame.Angles(0, t * 2.2, 0))
 	end)
-	-- 4) подсвечивается (Highlight цвета редкости)
 	local hl = make("Highlight", {
 		FillColor = rar.color, OutlineColor = WHITE, FillTransparency = 0.45, OutlineTransparency = 0,
 		DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
@@ -4591,7 +4351,6 @@ function Shop.chestSequence(skinId)
 		item:PivotTo(CFrame.new(top + Vector3.new(0, 5.1 + math.sin(t * 3) * 0.25, 0)) * CFrame.Angles(0, 3.1 + t * 2.2, 0))
 		hl.FillTransparency = 0.45 + math.sin(t * 6) * 0.15
 	end)
-	-- 5) на экране карточка
 	local function cleanup()
 		chest:Destroy()
 		item:Destroy()
@@ -4626,8 +4385,6 @@ local function dropIn(m, cf)
 	end)
 end
 
--- заносим рельсу в списки: путь (по нему ездит вагонетка) и концы (для магнита и для переезда)
--- у табличек и украшений пути нет
 local function registerPiece(m, kind, cf)
 	local info = { model = m, kind = kind, cf = cf }
 	if kind ~= "sign" and kind ~= "decor" then
@@ -4643,7 +4400,6 @@ local function registerPiece(m, kind, cf)
 		end
 		local n = #pts
 		info.pts, info.tans, info.ups, info.cum, info.len = pts, tans, ups, cum, cum[n]
-		-- dir у конца — куда смотрит «продолжение» рельсы (наружу от неё)
 		eps[#eps + 1] = {
 			pos = pts[1], dir = cf:VectorToWorldSpace(-d.sDir), up = cf:VectorToWorldSpace(d.sUp),
 			info = info, which = 1,
@@ -4657,8 +4413,6 @@ local function registerPiece(m, kind, cf)
 	return info
 end
 
--- yaw — поворот вокруг вертикали (у обычных рельс 0 / 90 / 180 / 270), pitch и roll — наклон и крен (у обычных 0);
--- free = true — свободная рельса (не привязана к клетке сетки); text — текст таблички; deco — ключ украшения из MODELS
 local function spawnPiece(kind, x, y, z, yaw, pitch, roll, free, animate, text, deco, skin)
 	local m
 	if kind == "decor" then
@@ -4668,7 +4422,7 @@ local function spawnPiece(kind, x, y, z, yaw, pitch, roll, free, animate, text, 
 	end
 	local cf = Geo.pieceCF(x, y, z, yaw, pitch, roll)
 	if kind ~= "loop" and kind ~= "decor" and math.abs(pitch) < 0.5 and math.abs(roll) < 0.5 then
-		addSupport(m, x, y, z) -- опора до земли — только под ровными рельсами
+		addSupport(m, x, y, z)
 	end
 	m:SetAttribute("Rot", yaw)
 	m:SetAttribute("Pitch", pitch)
@@ -4682,14 +4436,14 @@ local function spawnPiece(kind, x, y, z, yaw, pitch, roll, free, animate, text, 
 		m:SetAttribute("Deco", deco)
 	end
 	if skin and (kind == "straight" or kind == "curve" or kind == "ramp") and Skins.defs[skin] then
-		Skins.styleRail(m, kind, skin) -- скин рельсы
+		Skins.styleRail(m, kind, skin)
 		m:SetAttribute("Skin", skin)
 	end
 	m:PivotTo(cf)
 	m.Parent = railsFolder
 	registerPiece(m, kind, cf)
 	if kind == "decor" and deco == "door" then
-		Home.attachDoor(m, cf) -- кнопка, подсветка, картинка и створка
+		Home.attachDoor(m, cf)
 	end
 	if not free then
 		tileAt[cellKey(x, z)] = m
@@ -4737,19 +4491,18 @@ local function serialize()
 					KIND_CODE[kind] or 0,
 				}
 				if kind == "sign" then
-					entry[6] = m:GetAttribute("Text") or "" -- текст таблички
+					entry[6] = m:GetAttribute("Text") or ""
 				elseif kind == "decor" then
-					entry[6] = m:GetAttribute("Deco") or "gift" -- название украшения
+					entry[6] = m:GetAttribute("Deco") or "gift"
 				end
 				if m:GetAttribute("Free") == true then
-					-- свободная рельса: ещё наклон, крен и метка «свободная»
 					entry[6] = entry[6] or 0
 					entry[7] = round2(m:GetAttribute("Pitch") or 0)
 					entry[8] = round2(m:GetAttribute("Roll") or 0)
 					entry[9] = 1
 				end
 				local skin = m:GetAttribute("Skin")
-				if skin then -- скин рельсы: 10-е значение записи (дыры заполняем нулями)
+				if skin then
 					entry[6] = entry[6] or 0
 					entry[7] = entry[7] or 0
 					entry[8] = entry[8] or 0
@@ -4760,7 +4513,6 @@ local function serialize()
 			end
 		end
 	end
-	-- маршруты жителей: { 0, 0, 0, 0, 6, имя, "x,y,z;x,y,z;…", номер слота }
 	for i, r in ipairs(Home.routes) do
 		if #r.pts >= Home.ROUTE_MIN then
 			out[#out + 1] = { 0, 0, 0, 0, KIND_CODE.route, r.name, Home.packRoute(r.pts), i }
@@ -4790,13 +4542,12 @@ end
 local function loadRails(rails)
 	for i, r in ipairs(rails) do
 		if type(r) == "table" and r[5] == KIND_CODE.route then
-			Home.loadRoute(r) -- это не рельса, а сохранённый маршрут
+			Home.loadRoute(r)
 		elseif type(r) == "table"
 			and type(r[1]) == "number" and type(r[2]) == "number"
 			and type(r[3]) == "number" and type(r[4]) == "number"
 			and railCount < MAX_RAILS then
 			local kind = CODE_KIND[r[5]] or "straight"
-			-- украшения всегда «свободные»; неизвестное название (нет в MODELS) — пропускаем
 			local free = (r[9] == 1) or kind == "decor"
 			local deco = (kind == "decor" and type(r[6]) == "string" and Decor.builders[r[6]]) and r[6] or nil
 			if (free or not tileAt[cellKey(r[1], r[3])]) and (kind ~= "decor" or deco) then
@@ -4868,11 +4619,6 @@ local function markDirty()
 end
 
 -- ===== Вагонетка: логика =====
--- Вагонетка едет по «пути» рельсы. Когда путь кончается, она ищет рядом конец другой рельсы
--- (подходящий и по месту, и по направлению) и переезжает на неё. Так одинаково работают
--- обычные рельсы, свободные рельсы и мёртвые петли.
-
--- точка пути на расстоянии s от начала рельсы: позиция, направление и «верх»
 function Geo.samplePath(info, s)
 	local pts, cum = info.pts, info.cum
 	local n = #pts
@@ -4889,7 +4635,6 @@ function Geo.samplePath(info, s)
 	return pos, tan.Unit, up
 end
 
--- поворот вагонетки: нос — по движению, крыша — к «верху» пути (на петле это может быть вниз)
 function Geo.frameFrom(heading, up)
 	local back = -heading
 	local right = up:Cross(back)
@@ -4903,7 +4648,6 @@ function Geo.frameFrom(heading, up)
 	return CFrame.fromMatrix(Vector3.zero, right, back:Cross(right), back)
 end
 
--- переезд на следующую рельсу; false — дальше пути нет
 local function advanceCart(c)
 	local info = c.info
 	local pos, tan
@@ -4924,14 +4668,14 @@ local function advanceCart(c)
 	if not best then
 		return false
 	end
-	c.gap += pos - best.pos -- если концы чуть не совпали, вагонетка «доезжает» плавно, без рывка
+	c.gap += pos - best.pos
 	c.info = best.info
 	if best.which == 1 then
 		c.dir, c.s = 1, 0
 	else
 		c.dir, c.s = -1, best.info.len
 	end
-	Skins.entered(c) -- запомнить рельсу и запустить эффект скина рельсы
+	Skins.entered(c)
 	return true
 end
 
@@ -4945,7 +4689,6 @@ local function spawnCart(tile)
 	end
 	local s = info.len / 2
 	local pos, tan, up = Geo.samplePath(info, s)
-	-- едем туда, куда смотрит камера
 	local look = camera.CFrame.LookVector
 	local d = Vector3.new(tan.X, 0, tan.Z):Dot(Vector3.new(look.X, 0, look.Z))
 	if math.abs(d) < 1e-3 then
@@ -4953,7 +4696,7 @@ local function spawnCart(tile)
 	end
 	local dir = (d >= 0) and 1 or -1
 
-	local model = Skins.newCart(Shop.data.equip.cart) -- надетый скин вагонетки (или обычная)
+	local model = Skins.newCart(Shop.data.equip.cart)
 	model.Parent = workspace
 	local rot = Geo.frameFrom(tan * dir, up)
 	local cf = CFrame.new(pos) * rot * CFrame.new(0, 0.7, 0)
@@ -5034,9 +4777,8 @@ local function stepCart(dt)
 	if c.wait > 0 then
 		c.wait -= dt
 	elseif c.hold and os.clock() < c.hold then
-		c.speed = 0 -- скин держит вагонетку на месте (невесомость, взрыв и т.д.)
+		c.speed = 0
 	else
-		-- в гору медленнее, с горы быстрее (не больше, чем на уклоне)
 		local _, tan0 = Geo.samplePath(c.info, c.s)
 		local climb = math.clamp(tan0.Y * c.dir / math.sin(RAMP_ANGLE), -1, 1)
 		local slope = 1 - 0.25 * climb
@@ -5062,11 +4804,10 @@ local function stepCart(dt)
 				c.s = (c.dir > 0) and info.len or 0
 				c.rebase = true
 				if not advanceCart(c) then
-					Shop.onRideEnd(c) -- квест «прокатись от начала до конца»
+					Shop.onRideEnd(c)
 					if Skins.onEnd(c) then
-						break -- ТНТ-вагонетка взрывается и возвращает в начало
+						break
 					end
-					-- конец пути: разворот на этой же рельсе
 					c.dir = -c.dir
 					c.speed = 0
 					c.wait = 0.45
@@ -5076,7 +4817,6 @@ local function stepCart(dt)
 		end
 	end
 
-	-- поза вагонетки: положение берём точно с пути, а поворот при смене рельсы доворачиваем плавно
 	local pos, tan, up = Geo.samplePath(c.info, c.s)
 	local trot = Geo.frameFrom(tan * c.dir, up)
 	if c.rebase then
@@ -5090,7 +4830,7 @@ local function stepCart(dt)
 
 	local cf = CFrame.new(pos + c.gap) * rot * CFrame.new(0, 0.7, 0)
 	if c.extra then
-		cf = c.extra * cf -- сдвиг от скина (рельса поднимается, молот отбрасывает)
+		cf = c.extra * cf
 	end
 	c.cf = cf
 	c.model:PivotTo(cf)
@@ -5111,9 +4851,6 @@ local function stepCart(dt)
 	end
 end
 
--- ===== Камера на большой скорости: «рыбий глаз» =====
--- Камера не отъезжает назад, а раскрывает угол обзора (FieldOfView): края «растягиваются», как у объектива «рыбий глаз».
--- Эффект работает, пока ты сидишь в вагонетке; когда замедляешься или слезаешь — угол плавно возвращается.
 function FX.update(dt)
 	local target = 0
 	if cart and cart.riding then
@@ -5126,16 +4863,14 @@ function FX.update(dt)
 		end
 		return
 	end
-	local base = camera.FieldOfView - FX.add -- обычный угол обзора (вдруг его поменял другой скрипт)
+	local base = camera.FieldOfView - FX.add
 	local k = (target > FX.add) and FX.IN or FX.OUT
 	FX.add += (target - FX.add) * (1 - math.exp(-dt * k))
 	camera.FieldOfView = math.clamp(base + FX.add, 1, 120)
 end
 -- ===== Интерфейс =====
 local gui = make("ScreenGui", {
-	Name = "RailBuilderUI",
-	ResetOnSpawn = false,
-	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+	Name = "RailBuilderUI", ResetOnSpawn = false, ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 }, player:WaitForChild("PlayerGui"))
 
 local root = make("Frame", { BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1) }, gui)
@@ -5152,88 +4887,51 @@ camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale)
 local function corner(o, r)
 	return make("UICorner", { CornerRadius = UDim.new(0, r or 10) }, o)
 end
-
 local function stroke(o, color, th, tr)
-	return make("UIStroke", {
-		Color = color, Thickness = th or 1, Transparency = tr or 0,
-		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
-	}, o)
+	return make("UIStroke", { Color = color, Thickness = th or 1, Transparency = tr or 0, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, o)
 end
-
 local function pad(o, v, h)
 	h = h or v
-	return make("UIPadding", {
-		PaddingTop = UDim.new(0, v), PaddingBottom = UDim.new(0, v),
-		PaddingLeft = UDim.new(0, h), PaddingRight = UDim.new(0, h),
-	}, o)
+	return make("UIPadding", { PaddingTop = UDim.new(0, v), PaddingBottom = UDim.new(0, v), PaddingLeft = UDim.new(0, h), PaddingRight = UDim.new(0, h) }, o)
 end
-
 local function label(parent, props)
 	local p = { BackgroundTransparency = 1, Font = Enum.Font.GothamMedium, TextSize = 14, TextColor3 = C.text, Text = "" }
-	for k, v in pairs(props) do
-		p[k] = v
-	end
+	for k, v in pairs(props) do p[k] = v end
 	return make("TextLabel", p, parent)
 end
-
 local function button(parent, props, base)
-	local p = {
-		AutoButtonColor = false, BackgroundColor3 = base, BorderSizePixel = 0,
-		Font = Enum.Font.GothamBold, TextColor3 = C.text, TextSize = 15, Text = "",
-	}
-	for k, v in pairs(props) do
-		p[k] = v
-	end
+	local p = { AutoButtonColor = false, BackgroundColor3 = base, BorderSizePixel = 0, Font = Enum.Font.GothamBold, TextColor3 = C.text, TextSize = 15, Text = "" }
+	for k, v in pairs(props) do p[k] = v end
 	local b = make("TextButton", p, parent)
 	corner(b, 10)
 	local sc = make("UIScale", {}, b)
 	b:SetAttribute("Base", base)
-	b.MouseEnter:Connect(function()
-		tween(b, 0.12, { BackgroundColor3 = b:GetAttribute("Base"):Lerp(WHITE, 0.12) })
-	end)
-	b.MouseLeave:Connect(function()
-		tween(b, 0.12, { BackgroundColor3 = b:GetAttribute("Base") })
-		tween(sc, 0.1, { Scale = 1 })
-	end)
-	b.MouseButton1Down:Connect(function()
-		tween(sc, 0.08, { Scale = 0.94 })
-	end)
-	b.MouseButton1Up:Connect(function()
-		tween(sc, 0.1, { Scale = 1 })
-	end)
+	b.MouseEnter:Connect(function() tween(b, 0.12, { BackgroundColor3 = b:GetAttribute("Base"):Lerp(WHITE, 0.12) }) end)
+	b.MouseLeave:Connect(function() tween(b, 0.12, { BackgroundColor3 = b:GetAttribute("Base") }); tween(sc, 0.1, { Scale = 1 }) end)
+	b.MouseButton1Down:Connect(function() tween(sc, 0.08, { Scale = 0.94 }) end)
+	b.MouseButton1Up:Connect(function() tween(sc, 0.1, { Scale = 1 }) end)
 	return b
 end
-
 local function setBase(b, color)
 	b:SetAttribute("Base", color)
 	tween(b, 0.15, { BackgroundColor3 = color })
 end
-
 local function setActive(b, on, color)
 	setBase(b, on and (color or C.accentDark) or C.card)
 	local st = b:FindFirstChildOfClass("UIStroke")
-	if st then
-		tween(st, 0.15, { Transparency = on and 0 or 1 })
-	end
+	if st then tween(st, 0.15, { Transparency = on and 0 or 1 }) end
 end
 
--- Уведомления сверху
+-- Уведомления
 local toastHolder = make("Frame", {
-	AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 72),
-	Size = UDim2.fromOffset(340, 0), AutomaticSize = Enum.AutomaticSize.Y,
-	BackgroundTransparency = 1, ZIndex = 20,
+	AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 72), Size = UDim2.fromOffset(340, 0),
+	AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, ZIndex = 20,
 }, root)
-make("UIListLayout", {
-	HorizontalAlignment = Enum.HorizontalAlignment.Center,
-	Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder,
-}, toastHolder)
+make("UIListLayout", { HorizontalAlignment = Enum.HorizontalAlignment.Center, Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, toastHolder)
 
 toast = function(text, color)
 	color = color or C.accent
-	local f = make("Frame", {
-		AutomaticSize = Enum.AutomaticSize.XY, Size = UDim2.fromOffset(0, 0),
-		BackgroundColor3 = C.panel, BackgroundTransparency = 1, BorderSizePixel = 0,
-	}, toastHolder)
+	local f = make("Frame", { AutomaticSize = Enum.AutomaticSize.XY, Size = UDim2.fromOffset(0, 0), BackgroundColor3 = C.panel, BackgroundTransparency = 1, BorderSizePixel = 0 }, toastHolder)
 	corner(f, 14)
 	local st = stroke(f, color, 1.5, 1)
 	pad(f, 7, 14)
@@ -5245,174 +4943,86 @@ toast = function(text, color)
 		tween(f, 0.3, { BackgroundTransparency = 1 })
 		tween(st, 0.3, { Transparency = 1 })
 		local tw = tween(l, 0.3, { TextTransparency = 1 })
-		tw.Completed:Once(function()
-			f:Destroy()
-		end)
+		tw.Completed:Once(function() f:Destroy() end)
 	end)
 end
 
--- ===== Карточка игрока: после загрузки «падает» сверху (аватарка скина, ник и регион смайликом) =====
--- Оформление как на рисунке: тёмная карточка с толстой чёрной обводкой (UIStroke), круглая аватарка с голубым кольцом,
--- ник и логин с чёрным контуром букв, голубые линии-акценты и флаг региона в рамочке справа внизу.
--- Потом появляются панели, а карточка остаётся перед ними (поверх), и чуть позже уезжает в угол.
+-- ===== Карточка игрока =====
 do
 	local PW, PH = 300, 118
-	local BLACK = Color3.new(0, 0, 0)
-	local DARK = Color3.fromRGB(20, 24, 36)
-	Profile.W, Profile.H = PW, PH -- размер карточки (нужен, чтобы она уехала в угол ровно)
-
+	local BLACK, DARK = Color3.new(0, 0, 0), Color3.fromRGB(20, 24, 36)
+	Profile.W, Profile.H = PW, PH
 	local card = make("Frame", {
-		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0, -150),
-		Size = UDim2.fromOffset(PW, PH), BackgroundColor3 = Color3.fromRGB(40, 48, 66), BorderSizePixel = 0,
-		Visible = false, ZIndex = 30, Rotation = -6, -- ZIndex 30 — выше всех панелей
+		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0, -150), Size = UDim2.fromOffset(PW, PH),
+		BackgroundColor3 = Color3.fromRGB(40, 48, 66), BorderSizePixel = 0, Visible = false, ZIndex = 30, Rotation = -6,
 	}, root)
 	corner(card, 16)
-	stroke(card, BLACK, 4, 0) -- толстая чёрная обводка
+	stroke(card, BLACK, 4, 0)
 	Profile.scale = make("UIScale", {}, card)
 
-	-- голубые линии-акценты
-	local function accent(x, y, w, ax)
-		local f = make("Frame", {
-			AnchorPoint = Vector2.new(ax or 0, 0), Position = UDim2.new(ax or 0, x, 0, y), Size = UDim2.fromOffset(w, 3),
-			BackgroundColor3 = C.accent, BorderSizePixel = 0,
-		}, card)
-		corner(f, 2)
-	end
-	-- РельсКоины (это не leaderstats, а просто цифра в карточке) рядом с регионом
-	local coinBox = make("Frame", {
-		Position = UDim2.fromOffset(116, 72), Size = UDim2.fromOffset(100, 38), BackgroundColor3 = BLACK, BorderSizePixel = 0,
-	}, card)
+	local coinBox = make("Frame", { Position = UDim2.fromOffset(116, 72), Size = UDim2.fromOffset(100, 38), BackgroundColor3 = BLACK, BorderSizePixel = 0 }, card)
 	corner(coinBox, 11)
-	local coinIn = make("Frame", {
-		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(93, 31),
-		BackgroundColor3 = DARK, BorderSizePixel = 0,
-	}, coinBox)
+	local coinIn = make("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(93, 31), BackgroundColor3 = DARK, BorderSizePixel = 0 }, coinBox)
 	corner(coinIn, 8)
 	stroke(coinIn, C.accent, 2.5, 0)
-	local coin = make("Frame", {
-		Position = UDim2.fromOffset(7, 5), Size = UDim2.fromOffset(21, 21), BackgroundColor3 = Color3.fromRGB(255, 205, 60), BorderSizePixel = 0,
-	}, coinIn)
+	local coin = make("Frame", { Position = UDim2.fromOffset(7, 5), Size = UDim2.fromOffset(21, 21), BackgroundColor3 = Color3.fromRGB(255, 205, 60), BorderSizePixel = 0 }, coinIn)
 	corner(coin, 11)
 	stroke(coin, BLACK, 2, 0)
-	Profile.coinL = label(coinIn, {
-		Position = UDim2.fromOffset(34, 0), Size = UDim2.new(1, -38, 1, 0), Font = Enum.Font.GothamBold, TextSize = 14,
-		TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = "0",
-	})
+	Profile.coinL = label(coinIn, { Position = UDim2.fromOffset(34, 0), Size = UDim2.new(1, -38, 1, 0), Font = Enum.Font.GothamBold, TextSize = 14, TextXAlignment = Enum.TextXAlignment.Left, Text = "0" })
 	make("UIStroke", { Color = BLACK, Thickness = 1.5 }, Profile.coinL)
-	accent(-16, 8, 44, 1) -- уголок справа сверху
 
-	-- круглая аватарка (голова твоего скина): чёрное кольцо → голубое кольцо → чёрная линия → аватарка
-	local ringOuter = make("Frame", {
-		Position = UDim2.fromOffset(12, 13), Size = UDim2.fromOffset(92, 92), BackgroundColor3 = BLACK, BorderSizePixel = 0,
-	}, card)
+	local ringOuter = make("Frame", { Position = UDim2.fromOffset(12, 13), Size = UDim2.fromOffset(92, 92), BackgroundColor3 = BLACK, BorderSizePixel = 0 }, card)
 	corner(ringOuter, 46)
-	local ringBlue = make("Frame", {
-		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(82, 82),
-		BackgroundColor3 = C.accent, BorderSizePixel = 0,
-	}, ringOuter)
+	local ringBlue = make("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(82, 82), BackgroundColor3 = C.accent, BorderSizePixel = 0 }, ringOuter)
 	corner(ringBlue, 41)
-	local ringIn = make("Frame", {
-		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(72, 72),
-		BackgroundColor3 = DARK, BorderSizePixel = 0,
-	}, ringBlue)
+	local ringIn = make("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(72, 72), BackgroundColor3 = DARK, BorderSizePixel = 0 }, ringBlue)
 	corner(ringIn, 36)
 	stroke(ringIn, BLACK, 3, 0)
-	Profile.avatarImg = make("ImageLabel", {
-		Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Image = "", ScaleType = Enum.ScaleType.Crop,
-	}, ringIn)
+	Profile.avatarImg = make("ImageLabel", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Image = "", ScaleType = Enum.ScaleType.Crop }, ringIn)
 	corner(Profile.avatarImg, 36)
 
-	-- ник и логин (буквы с чёрным контуром)
-	local nameL = label(card, {
-		Position = UDim2.fromOffset(116, 14), Size = UDim2.new(1, -130, 0, 28), Font = Enum.Font.GothamBold, TextSize = 21,
-		TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = player.DisplayName,
-	})
+	local nameL = label(card, { Position = UDim2.fromOffset(116, 14), Size = UDim2.new(1, -130, 0, 28), Font = Enum.Font.GothamBold, TextSize = 21, TextXAlignment = Enum.TextXAlignment.Left, Text = player.DisplayName })
 	make("UIStroke", { Color = BLACK, Thickness = 2 }, nameL)
-	local userL = label(card, {
-		Position = UDim2.fromOffset(116, 42), Size = UDim2.new(1, -130, 0, 18), TextSize = 13, TextColor3 = C.sub,
-		TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = "@" .. player.Name,
-	})
+	local userL = label(card, { Position = UDim2.fromOffset(116, 42), Size = UDim2.new(1, -130, 0, 18), TextSize = 13, TextColor3 = C.sub, TextXAlignment = Enum.TextXAlignment.Left, Text = "@" .. player.Name })
 	make("UIStroke", { Color = BLACK, Thickness = 1.5 }, userL)
 
-	-- регион: флаг-смайлик в рамочке (чёрная кайма + голубая линия) справа внизу
-	local chipOuter = make("Frame", {
-		AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -14, 1, -14), Size = UDim2.fromOffset(64, 38),
-		BackgroundColor3 = BLACK, BorderSizePixel = 0,
-	}, card)
+	local chipOuter = make("Frame", { AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -14, 1, -14), Size = UDim2.fromOffset(64, 38), BackgroundColor3 = BLACK, BorderSizePixel = 0 }, card)
 	corner(chipOuter, 11)
-	local chip = make("Frame", {
-		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(57, 31),
-		BackgroundColor3 = DARK, BorderSizePixel = 0,
-	}, chipOuter)
+	local chip = make("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(57, 31), BackgroundColor3 = DARK, BorderSizePixel = 0 }, chipOuter)
 	corner(chip, 8)
 	stroke(chip, C.accent, 2.5, 0)
 	Profile.flagL = label(chip, { Size = UDim2.fromScale(1, 1), TextSize = 21, Text = "🌍" })
 	Profile.card = card
 end
 
--- показать число РельсКоинов в карточке игрока (рядом с регионом)
-function Profile.setCoins(n)
-	if Profile.coinL then
-		Profile.coinL.Text = Shop.fmt(n)
-	end
-end
-
--- «RU» → 🇷🇺 (флаг собирается из двух «региональных» символов Unicode)
+function Profile.setCoins(n) if Profile.coinL then Profile.coinL.Text = Shop.fmt(n) end end
 function Profile.flag(code)
-	if type(code) ~= "string" or #code ~= 2 then
-		return "🌍"
-	end
+	if type(code) ~= "string" or #code ~= 2 then return "🌍" end
 	local a, b = code:upper():byte(1, 2)
-	if a < 65 or a > 90 or b < 65 or b > 90 then
-		return "🌍"
-	end
+	if a < 65 or a > 90 or b < 65 or b > 90 then return "🌍" end
 	return utf8.char(0x1F1E6 + a - 65, 0x1F1E6 + b - 65)
 end
-
--- код региона игрока (например "RU"); если Roblox не ответил — берём регион из языка Roblox ("ru-ru" → "RU")
 function Profile.fetchRegion()
 	local service = game:GetService("LocalizationService")
-	local ok, code = pcall(function()
-		return service:GetCountryRegionForPlayerAsync(player)
-	end)
-	if ok and type(code) == "string" and #code == 2 then
-		return code
-	end
-	local ok2, locale = pcall(function()
-		return service.RobloxLocaleId
-	end)
-	if ok2 and type(locale) == "string" then
-		return locale:match("[-_](%a%a)$")
-	end
-	return nil
+	local ok, code = pcall(function() return service:GetCountryRegionForPlayerAsync(player) end)
+	if ok and type(code) == "string" and #code == 2 then return code end
+	local ok2, locale = pcall(function() return service.RobloxLocaleId end)
+	if ok2 and type(locale) == "string" then return locale:match("[-_](%a%a)$") end
 end
-
--- картинка головы скина; миниатюра иногда ещё не готова — пробуем несколько раз
 function Profile.fetchAvatar()
 	local last
 	for _ = 1, 8 do
-		local ok, content, ready = pcall(function()
-			return Players:GetUserThumbnailAsync(player.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
-		end)
-		if ok and content then
-			last = content
-			if ready then
-				break
-			end
-		end
+		local ok, content, ready = pcall(function() return Players:GetUserThumbnailAsync(player.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150) end)
+		if ok and content then last = content; if ready then break end end
 		task.wait(0.5)
 	end
 	return last
 end
-
--- грузим аватарку и регион заранее (пока идёт экран загрузки)
 Profile.pending = 2
 function Profile.load()
 	task.spawn(function()
 		local img = Profile.fetchAvatar()
-		if img then
-			Profile.avatarImg.Image = img
-		end
+		if img then Profile.avatarImg.Image = img end
 		Profile.pending -= 1
 	end)
 	task.spawn(function()
@@ -5422,12 +5032,9 @@ function Profile.load()
 end
 task.spawn(Profile.load)
 
--- карточка падает сверху в центр экрана; возвращает управление, когда приземлилась
 function Profile.drop()
 	local t0 = os.clock()
-	while Profile.pending > 0 and os.clock() - t0 < 2 do -- чуть подождём, если аватарка ещё не загрузилась
-		task.wait(0.1)
-	end
+	while Profile.pending > 0 and os.clock() - t0 < 2 do task.wait(0.1) end
 	local card = Profile.card
 	card.Position = UDim2.new(0.5, 0, 0, -150)
 	card.Rotation = -6
@@ -5438,7 +5045,6 @@ function Profile.drop()
 	task.wait(1.2)
 end
 
--- потом карточка уменьшается и уезжает в правый верхний угол (остаётся поверх панелей) или исчезает
 function Profile.settle()
 	local card = Profile.card
 	if Profile.KEEP then
@@ -5447,12 +5053,9 @@ function Profile.settle()
 		tween(card, 0.7, { Position = UDim2.new(1, -(14 + Profile.W * s / 2), 0, 10 + Profile.H * s / 2) }, Enum.EasingStyle.Quint)
 	else
 		local tw = tween(card, 0.5, { Position = UDim2.new(0.5, 0, 0, -170), Rotation = 6 }, Enum.EasingStyle.Back, Enum.EasingDirection.In)
-		tw.Completed:Once(function()
-			card.Visible = false
-		end)
+		tw.Completed:Once(function() card.Visible = false end)
 	end
 end
-
 -- Плашка активного слота (сверху по центру)
 local pill = button(root, {
 	AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 10),
@@ -5465,9 +5068,7 @@ local pillName = label(pill, { Position = UDim2.fromOffset(48, 22), Size = UDim2
 local pillSave = label(pill, { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -12, 0.5, 0), Size = UDim2.fromOffset(100, 20), TextSize = 12, TextXAlignment = Enum.TextXAlignment.Right })
 
 refreshPill = function()
-	if not data then
-		return
-	end
+	if not data then return end
 	pillTop.Text = "СЛОТ " .. data.active .. " ИЗ " .. SLOT_COUNT .. "  ·  нажми, чтобы сменить"
 	pillName.Text = data.slots[data.active].name
 	local txt, col = "⚠ не сохраняется", C.sub
@@ -5481,6 +5082,7 @@ refreshPill = function()
 	pillSave.Text = txt
 	pillSave.TextColor3 = col
 end
+
 -- Нижняя панель
 local dock = make("Frame", {
 	AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -14),
@@ -5490,10 +5092,7 @@ local dock = make("Frame", {
 corner(dock, 18)
 stroke(dock, WHITE, 1, 0.88)
 pad(dock, 8)
-make("UIListLayout", {
-	FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8),
-	SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center,
-}, dock)
+make("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center }, dock)
 
 local function dockButton(parent, icon, text, order, width)
 	local b = button(parent, { Size = UDim2.fromOffset(width or 66, 62), LayoutOrder = order }, C.card)
@@ -5506,32 +5105,18 @@ end
 local buildBtn, buildIcon, buildLbl = dockButton(dock, "🚂", "Строить", 1)
 setBase(buildBtn, C.goodDark)
 local slotsBtn = dockButton(dock, "📁", "Слоты", 2)
-local divider = make("Frame", {
-	Size = UDim2.fromOffset(2, 44), BackgroundColor3 = WHITE, BackgroundTransparency = 0.88,
-	BorderSizePixel = 0, LayoutOrder = 6, Visible = false,
-}, dock)
-local tools = make("Frame", {
-	Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.XY,
-	BackgroundTransparency = 1, LayoutOrder = 7, Visible = false,
-}, dock)
-make("UIListLayout", {
-	FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
-	SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center,
-}, tools)
+local divider = make("Frame", { Size = UDim2.fromOffset(2, 44), BackgroundColor3 = WHITE, BackgroundTransparency = 0.88, BorderSizePixel = 0, LayoutOrder = 6, Visible = false }, dock)
+local tools = make("Frame", { Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.XY, BackgroundTransparency = 1, LayoutOrder = 7, Visible = false }, dock)
+make("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center }, tools)
 
--- кнопки инструментов чуть уже, чтобы панель с табличками и украшениями поместилась на экран
 local function toolButton(icon, text, order)
 	local b, ic, lb = dockButton(tools, icon, text, order, 58)
 	lb.TextSize = 10
 	return b, ic, lb
 end
 
--- картинка вместо значка-эмодзи на кнопке
 function Decor.icon(btn, image)
-	return make("ImageLabel", {
-		AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 4), Size = UDim2.fromOffset(34, 34),
-		BackgroundTransparency = 1, Image = image, ScaleType = Enum.ScaleType.Fit,
-	}, btn)
+	return make("ImageLabel", { AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 4), Size = UDim2.fromOffset(34, 34), BackgroundTransparency = 1, Image = image, ScaleType = Enum.ScaleType.Fit }, btn)
 end
 
 local toolBtns = {}
@@ -5543,7 +5128,7 @@ toolBtns.cart = toolButton("🚃", "Вагонетка", 5)
 toolBtns.sign = toolButton("🪧", "Табличка", 6)
 toolBtns.edit = toolButton("✏️", "Текст", 7)
 do
-	local b, ic = toolButton("🎄", "Декор", 8) -- кнопка «Украшения» (картинка вместо значка)
+	local b, ic = toolButton("🎄", "Декор", 8)
 	ic.Text = ""
 	Decor.icon(b, IMG.DECOR)
 	Decor.btn = b
@@ -5552,8 +5137,7 @@ local rotateBtn = toolButton("↻", "Повернуть", 9)
 local actionBtn, actionIcon, actionLbl = toolButton("✔", "Поставить", 10)
 setBase(actionBtn, C.goodDark)
 actionBtn.Visible = UserInputService.TouchEnabled
-Decor.placeImg = Decor.icon(actionBtn, IMG.PLACE) -- картинка «Поставить» вместо галочки
--- новые картинки на кнопках «Строить» и «Слоты» (вместо значков-смайликов)
+Decor.placeImg = Decor.icon(actionBtn, IMG.PLACE)
 buildIcon.Text = ""
 Decor.icon(buildBtn, Shop.IMG.build)
 slotsBtn:FindFirstChildOfClass("TextLabel").Text = ""
@@ -5561,8 +5145,6 @@ Decor.icon(slotsBtn, Shop.IMG.slots)
 
 -- ===== Свободный режим: интерфейс =====
 local FUI = {}
-
--- нижняя панель над основной: петля, наклон, крен, сторона, магнит, шаг угла
 FUI.dock = make("Frame", {
 	AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -100),
 	Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.XY,
@@ -5571,10 +5153,7 @@ FUI.dock = make("Frame", {
 corner(FUI.dock, 18)
 stroke(FUI.dock, WHITE, 1, 0.88)
 pad(FUI.dock, 8)
-make("UIListLayout", {
-	FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
-	SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center,
-}, FUI.dock)
+make("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center }, FUI.dock)
 
 do
 	local function freeButton(key, icon, text, order)
@@ -5583,7 +5162,7 @@ do
 		FUI[key .. "Lbl"] = lb
 		return b
 	end
-	toolBtns.loop = freeButton("loop", "🎢", "Петля", 1) -- «Петля» — такой же инструмент, как остальные
+	toolBtns.loop = freeButton("loop", "🎢", "Петля", 1)
 	freeButton("pitch", "↗", "Наклон", 2)
 	freeButton("roll", "🔃", "Крен", 3)
 	freeButton("side", "↔", "Сторона", 4)
@@ -5592,10 +5171,9 @@ do
 	FUI.pitchLbl.TextSize = 10
 	FUI.rollLbl.TextSize = 10
 	FUI.stepLbl.TextSize = 10
-	FUI.only = { FUI.pitch, FUI.roll, FUI.side, FUI.magnet, FUI.step } -- кнопки, нужные только когда что-то ставишь
+	FUI.only = { FUI.pitch, FUI.roll, FUI.side, FUI.magnet, FUI.step }
 end
 
--- маленький светящийся шарик на конце рельсы, к которому прилип призрак
 FUI.mark = make("Part", {
 	Name = "MagnetMark", Shape = Enum.PartType.Ball, Size = Vector3.new(1.1, 1.1, 1.1),
 	Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false,
@@ -5603,7 +5181,7 @@ FUI.mark = make("Part", {
 })
 
 local function refreshFreeButtons()
-	local o = FM.snapped and FM.rel or FM -- когда призрак прилип, углы считаются от конца рельсы
+	local o = FM.snapped and FM.rel or FM
 	FUI.pitchLbl.Text = "Наклон " .. math.round(o.pitch) .. "°"
 	FUI.rollLbl.Text = "Крен " .. math.round(o.roll) .. "°"
 	FUI.stepLbl.Text = "Шаг " .. FM.stepAngle() .. "°"
@@ -5613,7 +5191,7 @@ local function refreshFreeButtons()
 end
 refreshFreeButtons()
 
--- переключатель «Свободный режим» — как на iPhone (слева сверху, виден в режиме строительства)
+-- Переключатель «Свободный режим»
 do
 	local SW_W, SW_H, KNOB = 54, 32, 28
 	FUI.card = make("Frame", {
@@ -5622,29 +5200,18 @@ do
 	}, root)
 	corner(FUI.card, 16)
 	stroke(FUI.card, WHITE, 1, 0.88)
-	label(FUI.card, {
-		Position = UDim2.fromOffset(14, 8), Size = UDim2.new(1, -92, 0, 20),
-		Font = Enum.Font.GothamBold, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left,
-		Text = "Свободный режим",
-	})
-	FUI.sub = label(FUI.card, {
-		Position = UDim2.fromOffset(14, 28), Size = UDim2.new(1, -92, 0, 16),
-		TextSize = 11, TextColor3 = C.sub, TextXAlignment = Enum.TextXAlignment.Left,
-	})
+	label(FUI.card, { Position = UDim2.fromOffset(14, 8), Size = UDim2.new(1, -92, 0, 20), Font = Enum.Font.GothamBold, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left, Text = "Свободный режим" })
+	FUI.sub = label(FUI.card, { Position = UDim2.fromOffset(14, 28), Size = UDim2.new(1, -92, 0, 16), TextSize = 11, TextColor3 = C.sub, TextXAlignment = Enum.TextXAlignment.Left })
 	FUI.track = make("TextButton", {
 		AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -12, 0.5, 0),
 		Size = UDim2.fromOffset(SW_W, SW_H), BackgroundColor3 = C.swOff,
 		AutoButtonColor = false, BorderSizePixel = 0, Text = "",
 	}, FUI.card)
 	corner(FUI.track, SW_H / 2)
-	FUI.knob = make("Frame", {
-		Position = UDim2.fromOffset(2, 2), Size = UDim2.fromOffset(KNOB, KNOB),
-		BackgroundColor3 = WHITE, BorderSizePixel = 0,
-	}, FUI.track)
+	FUI.knob = make("Frame", { Position = UDim2.fromOffset(2, 2), Size = UDim2.fromOffset(KNOB, KNOB), BackgroundColor3 = WHITE, BorderSizePixel = 0 }, FUI.track)
 	corner(FUI.knob, KNOB / 2)
-	stroke(FUI.knob, Color3.new(0, 0, 0), 1, 0.8) -- лёгкая «тень» вокруг ползунка
+	stroke(FUI.knob, Color3.new(0, 0, 0), 1, 0.8)
 
-	-- положение ползунка и цвет дорожки; animate — плавно, как на iPhone
 	function FUI.refreshSwitch(animate)
 		local on = FM.on
 		local goalPos = UDim2.fromOffset(on and (SW_W - KNOB - 2) or 2, 2)
@@ -5662,17 +5229,11 @@ do
 		FUI.sub.TextColor3 = on and C.good or C.sub
 	end
 
-	-- пока палец / мышь прижаты, ползунок слегка вытягивается (как у настоящего переключателя)
 	FUI.track.MouseButton1Down:Connect(function()
 		local w = KNOB + 6
-		tween(FUI.knob, 0.1, {
-			Size = UDim2.fromOffset(w, KNOB),
-			Position = UDim2.fromOffset(FM.on and (SW_W - w - 2) or 2, 2),
-		})
+		tween(FUI.knob, 0.1, { Size = UDim2.fromOffset(w, KNOB), Position = UDim2.fromOffset(FM.on and (SW_W - w - 2) or 2, 2) })
 	end)
-	FUI.track.MouseLeave:Connect(function()
-		FUI.refreshSwitch(true)
-	end)
+	FUI.track.MouseLeave:Connect(function() FUI.refreshSwitch(true) end)
 end
 FUI.refreshSwitch(false)
 
@@ -5695,14 +5256,12 @@ local HINTS = {
 	edit = TOUCH_ONLY and "Напиши новый текст → тапни табличку → «Применить»" or "Напиши новый текст в поле выше и нажми ЛКМ на табличке",
 	loop = "Мёртвая петля ставится только в свободном режиме",
 	decor = TOUCH_ONLY and "Выбери украшение → тапни место → «Поставить»  ·  ↻ — повернуть" or "ЛКМ — поставить  ·  R — повернуть  ·  E / Q — выше / ниже  ·  можно ставить и на рельсы",
-	-- подсказки свободного режима (для всего, что ставится); короткие, чтобы не залезать на боковые панели
 	free = {
 		place = TOUCH_ONLY and "Тапни место → «Поставить»  ·  внизу: наклон, крен, магнит" or "ЛКМ — поставить  ·  R поворот  ·  T наклон  ·  Y крен  ·  M магнит",
 		loop = TOUCH_ONLY and "Подведи к концу рельсы — прилипнет  ·  «Поставить»" or "Подведи к концу рельсы — прилипнет 🧲  ·  ЛКМ — поставить",
 		sign = TOUCH_ONLY and "Напиши текст → тапни место → «Поставить»" or "Текст в поле выше  ·  ЛКМ — поставить  ·  R / T / Y — повороты",
 	},
 }
--- { значок, подпись, true = вместо значка показать картинку «Поставить» }
 local ACTIONS = {
 	straight = { "✔", "Поставить", true }, curve = { "✔", "Поставить", true }, ramp = { "✔", "Поставить", true },
 	erase = { "🗑", "Удалить" }, cart = { "🚃", "Поставить", true },
@@ -5710,72 +5269,51 @@ local ACTIONS = {
 	decor = { "✔", "Поставить", true },
 }
 
--- Поле для текста таблички (над подсказкой)
 local signPanel = make("Frame", {
 	AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -150),
-	Size = UDim2.fromOffset(330, 78),
-	BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false,
+	Size = UDim2.fromOffset(330, 78), BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false,
 }, root)
 corner(signPanel, 14)
 stroke(signPanel, WHITE, 1, 0.88)
-label(signPanel, {
-	Position = UDim2.fromOffset(12, 6), Size = UDim2.new(1, -90, 0, 16), TextSize = 11, TextColor3 = C.sub,
-	TextXAlignment = Enum.TextXAlignment.Left, Text = "🪧 ТЕКСТ ТАБЛИЧКИ",
-})
-local signCount = label(signPanel, {
-	AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -12, 0, 6), Size = UDim2.fromOffset(70, 16),
-	TextSize = 11, TextColor3 = C.sub, TextXAlignment = Enum.TextXAlignment.Right,
-})
+label(signPanel, { Position = UDim2.fromOffset(12, 6), Size = UDim2.new(1, -90, 0, 16), TextSize = 11, TextColor3 = C.sub, TextXAlignment = Enum.TextXAlignment.Left, Text = "🪧 ТЕКСТ ТАБЛИЧКИ" })
+local signCount = label(signPanel, { AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -12, 0, 6), Size = UDim2.fromOffset(70, 16), TextSize = 11, TextColor3 = C.sub, TextXAlignment = Enum.TextXAlignment.Right })
 local signBox = make("TextBox", {
 	Position = UDim2.fromOffset(10, 26), Size = UDim2.new(1, -20, 0, 42),
 	BackgroundColor3 = C.bg, BorderSizePixel = 0, TextColor3 = C.text, PlaceholderColor3 = C.sub,
 	PlaceholderText = "Напиши что угодно…", Font = Enum.Font.GothamMedium, TextSize = 15,
 	ClearTextOnFocus = false, MultiLine = true, TextWrapped = true, ClipsDescendants = true,
-	TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
-	Text = signText,
+	TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, Text = signText,
 }, signPanel)
 corner(signBox, 8)
 pad(signBox, 4, 8)
 
-local function refreshSignCounter()
-	signCount.Text = (utf8.len(signText) or 0) .. "/" .. SIGN_MAX_CHARS
-end
+local function refreshSignCounter() signCount.Text = (utf8.len(signText) or 0) .. "/" .. SIGN_MAX_CHARS end
 refreshSignCounter()
 
 signBox:GetPropertyChangedSignal("Text"):Connect(function()
 	local t = cleanSignText(signBox.Text)
 	if t ~= signBox.Text then
-		signBox.Text = t -- вызовет это событие ещё раз уже с чистым текстом
+		signBox.Text = t
 		return
 	end
 	signText = t
 	refreshSignCounter()
-	if ghost and ghostKind == "sign" then
-		setSignText(ghost, signText) -- призрак показывает текст сразу
-	end
+	if ghost and ghostKind == "sign" then setSignText(ghost, signText) end
 end)
 
 signBox.FocusLost:Connect(function()
 	local t = finalSignText(signBox.Text)
-	if t ~= signBox.Text then
-		signBox.Text = t
-	end
+	if t ~= signBox.Text then signBox.Text = t end
 end)
 
--- когда над основной панелью висит панель свободного режима (или открыта панель украшений, она выше),
--- подсказку и поле текста поднимаем выше
 local function layoutBottom()
 	local extra = 0
-	if Decor.open then
-		extra = 46
-	elseif FUI.dock.Visible then
-		extra = 80
-	end
+	if Decor.open then extra = 46
+	elseif FUI.dock.Visible then extra = 80 end
 	hint.Position = UDim2.new(0.5, 0, 1, -106 - extra)
 	signPanel.Position = UDim2.new(0.5, 0, 1, -150 - extra)
 end
--- ===== Панель украшений: заменяет нижнюю панель, пока открыта =====
--- в каждой карточке крутится модель (ViewportFrame), а не картинка
+-- ===== Панель украшений =====
 Decor.dock = make("Frame", {
 	AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -14),
 	Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.XY,
@@ -5784,14 +5322,10 @@ Decor.dock = make("Frame", {
 corner(Decor.dock, 18)
 stroke(Decor.dock, WHITE, 1, 0.88)
 pad(Decor.dock, 8)
-make("UIListLayout", {
-	FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8),
-	SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center,
-}, Decor.dock)
+make("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center }, Decor.dock)
 
 Decor.backBtn = dockButton(Decor.dock, "◀", "Назад", 1, 62)
 Decor.prevBtn = button(Decor.dock, { Size = UDim2.fromOffset(30, 100), LayoutOrder = 2, Text = "‹", TextSize = 28 }, C.card)
--- карточек много, поэтому они лежат в прокручиваемом списке: тяни пальцем / мышью или жми стрелки по бокам
 Decor.scroll = make("ScrollingFrame", {
 	Size = UDim2.fromOffset(86 * 4.5 + 8 * 4, 108), LayoutOrder = 3,
 	BackgroundTransparency = 1, BorderSizePixel = 0, ScrollingDirection = Enum.ScrollingDirection.X,
@@ -5799,28 +5333,17 @@ Decor.scroll = make("ScrollingFrame", {
 	CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.X,
 }, Decor.dock)
 pad(Decor.scroll, 3)
-make("UIListLayout", {
-	FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder,
-}, Decor.scroll)
+make("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }, Decor.scroll)
 Decor.nextBtn = button(Decor.dock, { Size = UDim2.fromOffset(30, 100), LayoutOrder = 4, Text = "›", TextSize = 28 }, C.card)
 for i, item in ipairs(Decor.list) do
 	local card = button(Decor.scroll, { Size = UDim2.fromOffset(86, 100), LayoutOrder = i }, C.card)
 	stroke(card, C.accent, 2, 1)
 	Decor.addSpinner(card, item.key)
-	label(card, {
-		Position = UDim2.fromOffset(0, 72), Size = UDim2.new(1, 0, 0, 16),
-		Font = Enum.Font.GothamBold, TextSize = 12, Text = item.name,
-	})
-	label(card, {
-		Position = UDim2.fromOffset(0, 87), Size = UDim2.new(1, 0, 0, 12),
-		TextSize = 9, TextColor3 = C.sub, Text = item.tag,
-	})
+	label(card, { Position = UDim2.fromOffset(0, 72), Size = UDim2.new(1, 0, 0, 16), Font = Enum.Font.GothamBold, TextSize = 12, Text = item.name })
+	label(card, { Position = UDim2.fromOffset(0, 87), Size = UDim2.new(1, 0, 0, 12), TextSize = 9, TextColor3 = C.sub, Text = item.tag })
 	Decor.cards[item.key] = card
 end
-make("Frame", {
-	Size = UDim2.fromOffset(2, 44), BackgroundColor3 = WHITE, BackgroundTransparency = 0.88,
-	BorderSizePixel = 0, LayoutOrder = 20,
-}, Decor.dock)
+make("Frame", { Size = UDim2.fromOffset(2, 44), BackgroundColor3 = WHITE, BackgroundTransparency = 0.88, BorderSizePixel = 0, LayoutOrder = 20 }, Decor.dock)
 Decor.rotateBtn = dockButton(Decor.dock, "↻", "Повернуть", 21, 62)
 do
 	local b, ic = dockButton(Decor.dock, "", "Поставить", 22, 62)
@@ -5839,10 +5362,7 @@ local hpanel = make("Frame", {
 corner(hpanel, 16)
 stroke(hpanel, WHITE, 1, 0.88)
 pad(hpanel, 8)
-make("UIListLayout", {
-	Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder,
-	HorizontalAlignment = Enum.HorizontalAlignment.Center,
-}, hpanel)
+make("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder, HorizontalAlignment = Enum.HorizontalAlignment.Center }, hpanel)
 label(hpanel, { Size = UDim2.new(1, 0, 0, 14), TextSize = 11, TextColor3 = C.sub, Text = "ВЫСОТА", LayoutOrder = 0 })
 local hUp = button(hpanel, { Size = UDim2.new(1, 0, 0, 42), LayoutOrder = 1, Text = "▲", TextSize = 20 }, C.card)
 local hLabel = label(hpanel, { Size = UDim2.new(1, 0, 0, 30), Font = Enum.Font.GothamBold, TextSize = 24, Text = "0", LayoutOrder = 2 })
@@ -5872,9 +5392,7 @@ local hudHint = label(hud, { Size = UDim2.new(1, 0, 0, 30), TextSize = 11, TextC
 
 refreshCartHud = function()
 	hud.Visible = cart ~= nil
-	if not cart then
-		return
-	end
+	if not cart then return end
 	hudGo.Text = cart.running and "⏸ Стоп" or "▶ Ехать"
 	setBase(hudGo, cart.running and C.badDark or C.goodDark)
 	hudSpeed.Text = CART_SPEED_NAMES[cart.speedIdx]
@@ -5882,44 +5400,15 @@ refreshCartHud = function()
 	hudHint.Text = cart.riding and "Прыжок — тоже слезть" or "Сядь, чтобы прокатиться"
 end
 
-hudGo.Activated:Connect(function()
-	if cart then
-		cart.running = not cart.running
-		refreshCartHud()
-	end
-end)
-hudRev.Activated:Connect(function()
-	if cart then
-		cart.dir = -cart.dir
-		cart.speed = 0
-		cart.wait = 0
-		cart.rebase = true -- вагонетка плавно развернётся на месте
-	end
-end)
-hudSpeed.Activated:Connect(function()
-	if cart then
-		cart.speedIdx = cart.speedIdx % #CART_SPEEDS + 1
-		refreshCartHud()
-	end
-end)
-hudRide.Activated:Connect(function()
-	if cart then
-		setRiding(not cart.riding)
-	end
-end)
-hudDel.Activated:Connect(function()
-	removeCart("🚃 Вагонетка убрана")
-end)
+hudGo.Activated:Connect(function() if cart then cart.running = not cart.running; refreshCartHud() end end)
+hudRev.Activated:Connect(function() if cart then cart.dir = -cart.dir; cart.speed = 0; cart.wait = 0; cart.rebase = true end end)
+hudSpeed.Activated:Connect(function() if cart then cart.speedIdx = cart.speedIdx % #CART_SPEEDS + 1; refreshCartHud() end end)
+hudRide.Activated:Connect(function() if cart then setRiding(not cart.riding) end end)
+hudDel.Activated:Connect(function() removeCart("🚃 Вагонетка убрана") end)
 
 -- ===== Панель слотов =====
-local backdrop = make("TextButton", {
-	Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 1,
-	AutoButtonColor = false, Text = "", Visible = false, ZIndex = 5,
-}, root)
-local panel = make("Frame", {
-	AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
-	Size = UDim2.new(0, 400, 0.9, 0), BackgroundColor3 = C.panel, BorderSizePixel = 0, Active = true,
-}, backdrop)
+local backdrop = make("TextButton", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 1, AutoButtonColor = false, Text = "", Visible = false, ZIndex = 5 }, root)
+local panel = make("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(0, 400, 0.9, 0), BackgroundColor3 = C.panel, BorderSizePixel = 0, Active = true }, backdrop)
 corner(panel, 18)
 stroke(panel, WHITE, 1, 0.85)
 make("UISizeConstraint", { MaxSize = Vector2.new(400, 470) }, panel)
@@ -5929,39 +5418,27 @@ label(panel, { Position = UDim2.fromOffset(18, 12), Size = UDim2.new(1, -80, 0, 
 label(panel, { Position = UDim2.fromOffset(18, 39), Size = UDim2.new(1, -80, 0, 18), TextSize = 12, TextColor3 = C.sub, TextXAlignment = Enum.TextXAlignment.Left, Text = "Каждый слот — отдельная постройка. Нажми на слот, чтобы открыть." })
 local closeBtn = button(panel, { AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -12, 0, 12), Size = UDim2.fromOffset(36, 36), Text = "✕", TextSize = 16 }, C.card)
 
-local list = make("ScrollingFrame", {
-	Position = UDim2.fromOffset(12, 70), Size = UDim2.new(1, -24, 1, -128),
-	BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 4,
-	ScrollBarImageColor3 = C.sub, CanvasSize = UDim2.new(),
-	AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y,
-}, panel)
+local list = make("ScrollingFrame", { Position = UDim2.fromOffset(12, 70), Size = UDim2.new(1, -24, 1, -128), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 4, ScrollBarImageColor3 = C.sub, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y }, panel)
 make("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }, list)
-local footer = label(panel, {
-	AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 18, 1, -10), Size = UDim2.new(1, -36, 0, 42),
-	TextSize = 12, TextColor3 = C.sub, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
-})
+local footer = label(panel, { AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 18, 1, -10), Size = UDim2.new(1, -36, 0, 42), TextSize = 12, TextColor3 = C.sub, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left })
 
 local cards = {}
 
 refreshSlots = function()
-	if not data then
-		return
-	end
+	if not data then return end
 	for i, c in ipairs(cards) do
 		local active = (i == data.active)
 		local count = active and railCount or #data.slots[i].rails
 		c.name.Text = data.slots[i].name
 		local countText = (count == 0) and "Пусто" or objWord(count)
-		c.info.Text = active
-			and ('<font color="#50E18C"><b>● АКТИВНЫЙ</b></font>  ·  ' .. countText)
-			or (countText .. "  ·  нажми, чтобы открыть")
+		c.info.Text = active and ('<font color="#50E18C"><b>● АКТИВНЫЙ</b></font>  ·  ' .. countText) or (countText .. "  ·  нажми, чтобы открыть")
 		tween(c.stroke, 0.15, { Transparency = active and 0 or 1 })
 		setBase(c.card, active and Color3.fromRGB(34, 66, 56) or C.card)
 		c.badge.BackgroundColor3 = active and C.good or C.bg
 		c.badge.TextColor3 = active and C.bg or C.text
 	end
 	if saveState == "off" then
-		footer.Text = "⚠ Сохранение между заходами выключено: слоты работают, но пропадут при выходе."
+		footer.Text = "⚠ Сохранение выключено: проверь поддержку файлов в executor."
 		footer.TextColor3 = C.warn
 	elseif saveState == "saving" then
 		footer.Text = "● Сохраняю…"
@@ -5977,12 +5454,8 @@ refreshSlots = function()
 end
 
 local function setSlotsOpen(on)
-	if on and Shop.closeShopWindows then
-		Shop.closeShopWindows() -- «Магазин» и «Квесты» закрываем
-	end
-	if on and Home.ui and Home.ui.isOpen then
-		Home.ui.setOpen(false) -- «НПС» и «Слоты» не открываются одновременно
-	end
+	if on and Shop.closeShopWindows then Shop.closeShopWindows() end
+	if on and Home.ui and Home.ui.isOpen then Home.ui.setOpen(false) end
 	slotsOpen = on
 	setActive(slotsBtn, on, C.accentDark)
 	if on then
@@ -5994,18 +5467,12 @@ local function setSlotsOpen(on)
 	else
 		local tw = tween(backdrop, 0.15, { BackgroundTransparency = 1 })
 		tween(panelScale, 0.15, { Scale = 0.92 })
-		tw.Completed:Once(function()
-			if not slotsOpen then
-				backdrop.Visible = false
-			end
-		end)
+		tw.Completed:Once(function() if not slotsOpen then backdrop.Visible = false end end)
 	end
 end
 
 local function switchSlot(i)
-	if busy or i == data.active then
-		return
-	end
+	if busy or i == data.active then return end
 	busy = true
 	data.slots[data.active].rails = serialize()
 	clearRails()
@@ -6028,7 +5495,6 @@ local function commitName(i, text)
 		toast("✏️ Слот " .. i .. " переименован", C.good)
 	end
 end
-
 local function buildSlotCards()
 	for i = 1, SLOT_COUNT do
 		local card = button(list, { Size = UDim2.new(1, -8, 0, 68), LayoutOrder = i }, C.card)
@@ -6061,9 +5527,7 @@ local function buildSlotCards()
 		local trash = button(card, { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0), Size = UDim2.fromOffset(34, 34), Text = "🗑", TextSize = 15 }, C.bg)
 
 		card.Activated:Connect(function()
-			if not box.Visible then
-				switchSlot(i)
-			end
+			if not box.Visible then switchSlot(i) end
 		end)
 
 		edit.Activated:Connect(function()
@@ -6085,18 +5549,14 @@ local function buildSlotCards()
 			setBase(trash, C.bg)
 		end
 		trash.Activated:Connect(function()
-			if busy then
-				return
-			end
+			if busy then return end
 			if not armed then
 				armed = true
 				trash.Text = "❓"
 				setBase(trash, C.badDark)
 				toast("Нажми ещё раз — слот " .. i .. " будет очищен", C.warn)
 				task.delay(2.5, function()
-					if armed then
-						disarm()
-					end
+					if armed then disarm() end
 				end)
 				return
 			end
@@ -6114,15 +5574,19 @@ local function buildSlotCards()
 		cards[i] = { card = card, stroke = st, badge = badge, name = nameL, info = info }
 	end
 end
--- ===== Кнопка «НПС» (появляется, когда построена дверь) и раздел «Обучение» =====
--- В «Обучении» — слоты маршрутов. В каждом слоте один ровный ряд из трёх кнопок: Запомнить (записать свой путь и сохранить),
--- Отправить (жители пойдут по маршруту) и Очистить.
+
+-- Переключение кнопок нижней панели
+pill.Activated:Connect(function() setSlotsOpen(not slotsOpen) end)
+slotsBtn.Activated:Connect(function() setSlotsOpen(not slotsOpen) end)
+closeBtn.Activated:Connect(function() setSlotsOpen(false) end)
+backdrop.Activated:Connect(function() setSlotsOpen(false) end)
+-- ===== Кнопка «НПС» и раздел «Обучение» =====
 Home.npcBtn = dockButton(dock, "", "НПС", 3, 66)
 Decor.icon(Home.npcBtn, Home.NPC_IMAGE)
-Home.npcBtn.BackgroundTransparency = 1 -- фон кнопки полностью прозрачный: видна только картинка
+Home.npcBtn.BackgroundTransparency = 1
 Home.npcBtn.Visible = false
 function Home.refreshNpcBtn()
-	Home.npcBtn.Visible = next(Home.doors) ~= nil and not buildMode -- есть хотя бы одна дверь (в режиме строительства кнопка прячется)
+	Home.npcBtn.Visible = next(Home.doors) ~= nil and not buildMode
 end
 
 Home.ui = { isOpen = false, cards = {} }
@@ -6141,7 +5605,6 @@ do
 	make("UISizeConstraint", { MaxSize = Vector2.new(420, 480) }, panel)
 	ui.scale = make("UIScale", {}, panel)
 
-	-- заголовок: в начале картинка, потом слово «НПС»
 	make("ImageLabel", {
 		Position = UDim2.fromOffset(18, 12), Size = UDim2.fromOffset(30, 30), BackgroundTransparency = 1,
 		Image = Home.TITLE_IMAGE, ScaleType = Enum.ScaleType.Fit,
@@ -6155,7 +5618,6 @@ do
 		Text = "Закрыть", TextSize = 13,
 	}, C.card)
 
-	-- раздел «Обучение»
 	local tab = make("Frame", {
 		Position = UDim2.fromOffset(18, 52), Size = UDim2.fromOffset(130, 28),
 		BackgroundColor3 = C.accentDark, BorderSizePixel = 0,
@@ -6180,7 +5642,6 @@ do
 		TextSize = 12, TextColor3 = C.sub, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
 	})
 
-	-- слоты маршрутов: сверху номер, название и сведения, снизу ровный ряд из трёх кнопок одинаковой ширины
 	for i = 1, Home.ROUTE_SLOTS do
 		local card = button(rlist, { Size = UDim2.new(1, -8, 0, 100), LayoutOrder = i }, C.card)
 		local st = stroke(card, C.bad, 2, 1)
@@ -6213,7 +5674,6 @@ do
 		}
 	end
 
-	-- обновить надписи и вид кнопок в слотах
 	function ui.refresh()
 		for i, c in ipairs(ui.cards) do
 			local r = Home.routes[i]
@@ -6227,7 +5687,7 @@ do
 			else
 				c.info.Text = "Пусто"
 			end
-			setBase(c.play, has and C.goodDark or C.bg) -- нет маршрута — «Отправить» тусклая
+			setBase(c.play, has and C.goodDark or C.bg)
 			c.play.TextColor3 = has and C.text or C.sub
 			setBase(c.trash, c.armed and C.badDark or C.bg)
 			c.trash.Text = c.armed and "Точно?" or "Очистить"
@@ -6237,7 +5697,7 @@ do
 			tween(c.stroke, 0.15, { Transparency = recording and 0 or 1 })
 		end
 		if saveState == "off" then
-			ui.footer.Text = "Сохранение между заходами выключено: маршруты работают, но пропадут при выходе."
+			ui.footer.Text = "Сохранение выключено: маршруты пропадут при выходе."
 			ui.footer.TextColor3 = C.warn
 		else
 			ui.footer.Text = "Маршруты сохраняются вместе со слотом постройки."
@@ -6249,9 +5709,7 @@ do
 		ui.isOpen = on
 		setActive(Home.npcBtn, on, C.accentDark)
 		if on then
-			if slotsOpen then
-				setSlotsOpen(false)
-			end
+			if slotsOpen then setSlotsOpen(false) end
 			Shop.closeShopWindows()
 			ui.refresh()
 			ui.backdrop.Visible = true
@@ -6262,14 +5720,11 @@ do
 			local tw = tween(ui.backdrop, 0.15, { BackgroundTransparency = 1 })
 			tween(ui.scale, 0.15, { Scale = 0.92 })
 			tw.Completed:Once(function()
-				if not ui.isOpen then
-					ui.backdrop.Visible = false
-				end
+				if not ui.isOpen then ui.backdrop.Visible = false end
 			end)
 		end
 	end
 
-	-- панелька «идёт запись» (слева сверху): заголовок, сведения и два ровных кнопки внизу
 	ui.hud = make("Frame", {
 		Position = UDim2.fromOffset(14, 10), Size = UDim2.fromOffset(240, 92),
 		BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false, ZIndex = 6,
@@ -6301,15 +5756,12 @@ do
 	end
 	function ui.showRec(on)
 		ui.hud.Visible = on
-		if on then
-			ui.updateRec()
-		end
+		if on then ui.updateRec() end
 	end
 	ui.refresh()
 end
 
--- ===== Магазин и квесты: кнопки, окна и карточка выпавшего предмета =====
--- Окно-панель в том же стиле, что и «Слоты» и «НПС»
+-- ===== Магазин и квесты: конструктор окон =====
 function Shop.window(title, image)
 	local w = { isOpen = false }
 	w.backdrop = make("TextButton", {
@@ -6343,15 +5795,9 @@ function Shop.window(title, image)
 		w.isOpen = on
 		if on then
 			Shop.closeShopWindows(w)
-			if slotsOpen then
-				setSlotsOpen(false)
-			end
-			if Home.ui and Home.ui.isOpen then
-				Home.ui.setOpen(false)
-			end
-			if w.onOpen then
-				w.onOpen()
-			end
+			if slotsOpen then setSlotsOpen(false) end
+			if Home.ui and Home.ui.isOpen then Home.ui.setOpen(false) end
+			if w.onOpen then w.onOpen() end
 			w.backdrop.Visible = true
 			w.scale.Scale = 0.88
 			tween(w.backdrop, 0.2, { BackgroundTransparency = 0.45 })
@@ -6360,22 +5806,16 @@ function Shop.window(title, image)
 			local tw = tween(w.backdrop, 0.15, { BackgroundTransparency = 1 })
 			tween(w.scale, 0.15, { Scale = 0.92 })
 			tw.Completed:Once(function()
-				if not w.isOpen then
-					w.backdrop.Visible = false
-				end
+				if not w.isOpen then w.backdrop.Visible = false end
 			end)
 		end
 	end
-	w.closeBtn.Activated:Connect(function()
-		w.setOpen(false)
-	end)
-	w.backdrop.Activated:Connect(function()
-		w.setOpen(false)
-	end)
+	w.closeBtn.Activated:Connect(function() w.setOpen(false) end)
+	w.backdrop.Activated:Connect(function() w.setOpen(false) end)
 	Shop.windows[#Shop.windows + 1] = w
 	return w
 end
--- кнопки «Магазин» и «Квесты» в нижней панели (в режиме строительства прячутся, чтобы панель не вылезала за экран)
+-- кнопки «Магазин» и «Квесты» в нижней панели
 Shop.shopBtn = dockButton(dock, "", "Магазин", 4, 66)
 Decor.icon(Shop.shopBtn, Shop.IMG.shop)
 Shop.questBtn = dockButton(dock, "", "Квесты", 5, 66)
@@ -6422,7 +5862,6 @@ do
 		TextWrapped = true, Visible = false, Text = "Пока пусто. Купи сундук в магазине, и скины появятся здесь.",
 	})
 
-	-- карточка сундука
 	local cc = make("Frame", {
 		Position = UDim2.fromOffset(18, 6), Size = UDim2.new(1, -36, 0, 210), BackgroundColor3 = C.card, BorderSizePixel = 0,
 	}, pageShop)
@@ -6448,9 +5887,7 @@ do
 		AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -12), Size = UDim2.new(1, -28, 0, 36),
 		Text = "Купить", TextSize = 15,
 	}, C.goodDark)
-	ui.buy.Activated:Connect(function()
-		Shop.buy()
-	end)
+	ui.buy.Activated:Connect(function() Shop.buy() end)
 
 	local function showTab(skins)
 		pageShop.Visible = not skins
@@ -6459,15 +5896,9 @@ do
 		setBase(tabSkins, skins and C.accentDark or C.card)
 		ui.refresh()
 	end
-	tabShop.Activated:Connect(function()
-		showTab(false)
-	end)
-	tabSkins.Activated:Connect(function()
-		showTab(true)
-	end)
-	sw.onOpen = function()
-		ui.refresh()
-	end
+	tabShop.Activated:Connect(function() showTab(false) end)
+	tabSkins.Activated:Connect(function() showTab(true) end)
+	sw.onOpen = function() ui.refresh() end
 
 	-- ---------- Окно «Квесты» ----------
 	local qw = Shop.window("Квесты", Shop.IMG.quests)
@@ -6486,11 +5917,9 @@ do
 		AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y,
 	}, qw.body)
 	make("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }, ui.qlist)
-	qw.onOpen = function()
-		ui.refresh()
-	end
+	qw.onOpen = function() ui.refresh() end
 
-	-- ---------- Карточка выпавшего предмета ----------
+	-- ---------- Карточка награды ----------
 	local rev = make("Frame", {
 		Size = UDim2.fromScale(1, 1), BackgroundColor3 = BLACK, BackgroundTransparency = 0.35, BorderSizePixel = 0,
 		Visible = false, ZIndex = 40, Active = true,
@@ -6502,7 +5931,7 @@ do
 	corner(card, 20)
 	local cardStroke = stroke(card, WHITE, 3, 0)
 	ui.revScale = make("UIScale", {}, card)
-	ui.revBg = make("ImageLabel", { -- крутящаяся картинка на фоне
+	ui.revBg = make("ImageLabel", {
 		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.45), Size = UDim2.fromOffset(720, 720),
 		BackgroundTransparency = 1, Image = Shop.IMG.card, ImageTransparency = 0.2, ZIndex = 1,
 	}, card)
@@ -6561,9 +5990,7 @@ do
 		end
 		local cb = ui.revClose
 		ui.revClose = nil
-		if cb then
-			cb()
-		end
+		if cb then cb() end
 	end)
 
 	-- ---------- Обновление окон ----------
@@ -6578,11 +6005,9 @@ do
 		ui.buy.TextColor3 = can and C.text or C.sub
 		ui.buy.Text = "Купить за " .. Shop.PRICE
 
-		-- мои скины
+		-- Скины
 		for _, ch in ipairs(ui.skinPage:GetChildren()) do
-			if ch:IsA("GuiObject") then
-				ch:Destroy()
-			end
+			if ch:IsA("GuiObject") then ch:Destroy() end
 		end
 		local any = false
 		for i, id in ipairs(Skins.list) do
@@ -6591,97 +6016,52 @@ do
 				any = true
 				local def = Skins.defs[id]
 				local rar = Skins.RARITY[def.rarity]
-				local card2 = make("Frame", {
-					Size = UDim2.new(1, -8, 0, 64), BackgroundColor3 = C.card, BorderSizePixel = 0, LayoutOrder = i,
-				}, ui.skinPage)
+				local card2 = make("Frame", { Size = UDim2.new(1, -8, 0, 64), BackgroundColor3 = C.card, BorderSizePixel = 0, LayoutOrder = i }, ui.skinPage)
 				corner(card2, 12)
-				corner(make("Frame", {
-					Position = UDim2.fromOffset(8, 8), Size = UDim2.new(0, 5, 1, -16), BackgroundColor3 = rar.color, BorderSizePixel = 0,
-				}, card2), 3)
-				label(card2, {
-					Position = UDim2.fromOffset(22, 8), Size = UDim2.new(1, -140, 0, 24), Font = Enum.Font.GothamBold, TextSize = 15,
-					TextColor3 = rar.color, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
-					Text = def.name,
-				})
-				label(card2, {
-					Position = UDim2.fromOffset(22, 34), Size = UDim2.new(1, -140, 0, 20), TextSize = 12, TextColor3 = C.sub,
-					TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
-					Text = ((def.kind == "rail") and "Рельса" or "Вагонетка") .. " · " .. rar.name .. ((n > 1) and (" · x" .. n) or ""),
-				})
+				corner(make("Frame", { Position = UDim2.fromOffset(8, 8), Size = UDim2.new(0, 5, 1, -16), BackgroundColor3 = rar.color, BorderSizePixel = 0 }, card2), 3)
+				label(card2, { Position = UDim2.fromOffset(22, 8), Size = UDim2.new(1, -140, 0, 24), Font = Enum.Font.GothamBold, TextSize = 15, TextColor3 = rar.color, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = def.name })
+				label(card2, { Position = UDim2.fromOffset(22, 34), Size = UDim2.new(1, -140, 0, 20), TextSize = 12, TextColor3 = C.sub, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = ((def.kind == "rail") and "Рельса" or "Вагонетка") .. " · " .. rar.name .. ((n > 1) and (" · x" .. n) or "") })
 				local equipped = (def.kind == "rail" and d.equip.rail == id) or (def.kind == "cart" and d.equip.cart == id)
-				local b = button(card2, {
-					AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0), Size = UDim2.fromOffset(100, 34),
-					Text = equipped and "Снять" or "Надеть", TextSize = 13,
-				}, equipped and C.badDark or C.goodDark)
-				b.Activated:Connect(function()
-					Shop.equipSkin(def.kind, equipped and "" or id)
-				end)
+				local b = button(card2, { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0), Size = UDim2.fromOffset(100, 34), Text = equipped and "Снять" or "Надеть", TextSize = 13 }, equipped and C.badDark or C.goodDark)
+				b.Activated:Connect(function() Shop.equipSkin(def.kind, equipped and "" or id) end)
 			end
 		end
 		ui.empty.Visible = ui.skinPage.Visible and not any
 
-		-- квесты
+		-- Квесты
 		for _, ch in ipairs(ui.qlist:GetChildren()) do
-			if ch:IsA("GuiObject") then
-				ch:Destroy()
-			end
+			if ch:IsA("GuiObject") then ch:Destroy() end
 		end
 		for i, qid in ipairs(Shop.ORDER) do
 			local cfg = Shop.QUESTS[qid]
 			local q
 			for _, rec in ipairs(d.quests) do
-				if rec.id == qid then
-					q = rec
-				end
+				if rec.id == qid then q = rec end
 			end
 			local goal = q and q.goal or cfg.goal
 			local progress = q and math.min(q.progress or 0, goal) or 0
 			local done = progress >= goal
 			local claimed = q and q.claimed
-			local card2 = make("Frame", {
-				Size = UDim2.new(1, -8, 0, 108), BackgroundColor3 = C.card, BorderSizePixel = 0, LayoutOrder = i,
-			}, ui.qlist)
+			local card2 = make("Frame", { Size = UDim2.new(1, -8, 0, 108), BackgroundColor3 = C.card, BorderSizePixel = 0, LayoutOrder = i }, ui.qlist)
 			corner(card2, 12)
-			label(card2, {
-				Position = UDim2.fromOffset(14, 8), Size = UDim2.new(1, -28, 0, 22), Font = Enum.Font.GothamBold, TextSize = 15,
-				TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, RichText = true, Text = cfg.title,
-			})
-			label(card2, {
-				Position = UDim2.fromOffset(14, 30), Size = UDim2.new(1, -28, 0, 18), TextSize = 12, TextColor3 = C.sub,
-				TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = cfg.text,
-			})
-			label(card2, {
-				Position = UDim2.fromOffset(14, 50), Size = UDim2.new(1, -28, 0, 18), Font = Enum.Font.GothamBold, TextSize = 13,
-				TextColor3 = GOLD, TextXAlignment = Enum.TextXAlignment.Left,
-				Text = q and ("Награда: " .. Shop.fmt(q.reward) .. " РельсКоинов") or "Награда: случайная",
-			})
-			local track = make("Frame", {
-				Position = UDim2.fromOffset(14, 78), Size = UDim2.new(1, -150, 0, 18), BackgroundColor3 = C.bg, BorderSizePixel = 0,
-			}, card2)
+			label(card2, { Position = UDim2.fromOffset(14, 8), Size = UDim2.new(1, -28, 0, 22), Font = Enum.Font.GothamBold, TextSize = 15, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, RichText = true, Text = cfg.title })
+			label(card2, { Position = UDim2.fromOffset(14, 30), Size = UDim2.new(1, -28, 0, 18), TextSize = 12, TextColor3 = C.sub, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = cfg.text })
+			label(card2, { Position = UDim2.fromOffset(14, 50), Size = UDim2.new(1, -28, 0, 18), Font = Enum.Font.GothamBold, TextSize = 13, TextColor3 = GOLD, TextXAlignment = Enum.TextXAlignment.Left, Text = q and ("Награда: " .. Shop.fmt(q.reward) .. " РельсКоинов") or "Награда: случайная" })
+			local track = make("Frame", { Position = UDim2.fromOffset(14, 78), Size = UDim2.new(1, -150, 0, 18), BackgroundColor3 = C.bg, BorderSizePixel = 0 }, card2)
 			corner(track, 9)
-			local fill = make("Frame", {
-				Size = UDim2.new(math.clamp(progress / goal, 0, 1), 0, 1, 0), BackgroundColor3 = done and C.good or C.accent, BorderSizePixel = 0,
-			}, track)
+			local fill = make("Frame", { Size = UDim2.new(math.clamp(progress / goal, 0, 1), 0, 1, 0), BackgroundColor3 = done and C.good or C.accent, BorderSizePixel = 0 }, track)
 			corner(fill, 9)
-			local txt = label(track, {
-				Size = UDim2.fromScale(1, 1), Font = Enum.Font.GothamBold, TextSize = 11, Text = progress .. " / " .. goal,
-			})
+			local txt = label(track, { Size = UDim2.fromScale(1, 1), Font = Enum.Font.GothamBold, TextSize = 11, Text = progress .. " / " .. goal })
 			make("UIStroke", { Color = BLACK, Thickness = 1 }, txt)
 			local state = claimed and "Получено" or (done and "Забрать" or "В процессе")
-			local b = button(card2, {
-				AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -12, 1, -10), Size = UDim2.fromOffset(112, 34),
-				Text = state, TextSize = 13,
-			}, (done and not claimed) and C.goodDark or C.bg)
+			local b = button(card2, { AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -12, 1, -10), Size = UDim2.fromOffset(112, 34), Text = state, TextSize = 13 }, (done and not claimed) and C.goodDark or C.bg)
 			b.TextColor3 = (done and not claimed) and C.text or C.sub
 			b.Activated:Connect(function()
-				if done and not claimed then
-					Shop.claim(qid)
-				end
+				if done and not claimed then Shop.claim(qid) end
 			end)
 		end
 	end
 
-	-- каждый кадр: крутим фон карточки, раз в секунду обновляем таймер квестов
 	local acc = 0
 	function ui.tick(dt)
 		if rev.Visible then
@@ -6699,27 +6079,9 @@ do
 	ui.refresh()
 end
 
-Shop.shopBtn.Activated:Connect(function()
-	Shop.ui.shop.setOpen(not Shop.ui.shop.isOpen)
-end)
-Shop.questBtn.Activated:Connect(function()
-	Shop.ui.quests.setOpen(not Shop.ui.quests.isOpen)
-end)
-
-pill.Activated:Connect(function()
-	setSlotsOpen(not slotsOpen)
-end)
-slotsBtn.Activated:Connect(function()
-	setSlotsOpen(not slotsOpen)
-end)
-closeBtn.Activated:Connect(function()
-	setSlotsOpen(false)
-end)
-backdrop.Activated:Connect(function()
-	setSlotsOpen(false)
-end)
+Shop.shopBtn.Activated:Connect(function() Shop.ui.shop.setOpen(not Shop.ui.shop.isOpen) end)
+Shop.questBtn.Activated:Connect(function() Shop.ui.quests.setOpen(not Shop.ui.quests.isOpen) end)
 -- ===== Призрак, подсветка под курсором, действия =====
--- инструменты-рельсы (их можно наклонять, крутить в свободном режиме, они стыкуются магнитом)
 function Decor.railTool(t)
 	return t == "straight" or t == "curve" or t == "ramp" or t == "sign" or t == "loop"
 end
@@ -6728,29 +6090,19 @@ local function isPlacing(t)
 	return Decor.railTool(t) or t == "decor"
 end
 
--- инструменты, которые можно «тянуть» зажатой кнопкой мыши
--- (в свободном режиме рельсы ставятся по одной — иначе магнит за секунду выстроил бы бесконечную цепочку)
 local function isHoldTool(t)
-	if t == "erase" then
-		return true
-	end
+	if t == "erase" then return true end
 	return (not FM.on) and (t == "straight" or t == "curve" or t == "ramp")
 end
 
 local function hintFor(t)
-	if t == "decor" then
-		return HINTS.decor
-	end
-	if FM.on and isPlacing(t) then
-		return HINTS.free[t] or HINTS.free.place
-	end
+	if t == "decor" then return HINTS.decor end
+	if FM.on and isPlacing(t) then return HINTS.free[t] or HINTS.free.place end
 	return HINTS[t]
 end
 
 local function destroyGhost()
-	if ghost then
-		ghost:Destroy()
-	end
+	if ghost then ghost:Destroy() end
 	ghost, ghostKind, ghostHL, ghostShown, ghostCF = nil, nil, nil, nil, nil
 	Decor.ghostKey = nil
 	FUI.mark.Parent = nil
@@ -6766,50 +6118,34 @@ local function createGhost(kind)
 		ghost = newRailModel(kind, "Ghost")
 	end
 	ghostKind = kind
-	if kind == "sign" then
-		setSignText(ghost, signText)
-	end
+	if kind == "sign" then setSignText(ghost, signText) end
 	for _, d in ipairs(ghost:GetDescendants()) do
 		if d:IsA("BasePart") then
-			d.CanCollide = false
-			d.CanQuery = false
-			d.CanTouch = false
-			if d.Name ~= "Origin" then
-				d.Transparency = 0.35
-			end
+			d.CanCollide = false; d.CanQuery = false; d.CanTouch = false
+			if d.Name ~= "Origin" then d.Transparency = 0.35 end
 		elseif d:IsA("TextLabel") then
 			d.TextTransparency = 0.3
 		end
 	end
-	ghostHL = make("Highlight", {
-		OutlineColor = WHITE, FillColor = C.good,
-		DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
-	}, ghost)
+	ghostHL = make("Highlight", { OutlineColor = WHITE, FillColor = C.good, DepthMode = Enum.HighlightDepthMode.AlwaysOnTop }, ghost)
 end
 
 local function getRay()
 	if lastInputTouch then
-		if not touchPos then
-			return nil
-		end
+		if not touchPos then return nil end
 		return camera:ScreenPointToRay(touchPos.X, touchPos.Y)
 	end
 	local m = UserInputService:GetMouseLocation()
 	return camera:ViewportPointToRay(m.X, m.Y)
 end
 
--- ----- Магнит (свободный режим) -----
--- конец рельсы «свободен», если рядом нет конца другой рельсы
 function Geo.endpointOpen(ep)
 	for _, o in ipairs(eps) do
-		if o.info ~= ep.info and (o.pos - ep.pos).Magnitude < 0.8 then
-			return false
-		end
+		if o.info ~= ep.info and (o.pos - ep.pos).Magnitude < 0.8 then return false end
 	end
 	return true
 end
 
--- ближайший к лучу свободный конец рельсы (чем дальше конец, тем щедрее допуск)
 function Geo.findMagnet(ray)
 	local best, bestD
 	for _, ep in ipairs(eps) do
@@ -6825,8 +6161,6 @@ function Geo.findMagnet(ray)
 	return best
 end
 
--- где окажется рельса, если стыковать её с концом ep: началом (обычно) или концом («Сторона»);
--- FM.rel — доворот от идеального продолжения (по умолчанию нули — рельса продолжает путь ровно)
 function Geo.attachCF(kind, ep)
 	local lf = Geo.localFrames(kind)
 	local rel = Geo.oriCF(FM.rel.yaw, FM.rel.pitch, FM.rel.roll)
@@ -6836,13 +6170,10 @@ function Geo.attachCF(kind, ep)
 	return Geo.frameCF(ep.pos, ep.dir, ep.up) * rel * lf.s:Inverse()
 end
 
--- такая же рельса уже стоит ровно в этом месте (две одинаковые друг на друге не нужны)
 function Geo.isDuplicate(kind, cf)
 	for _, info in pairs(pieces) do
-		if info.kind == kind
-			and (info.cf.Position - cf.Position).Magnitude < 0.3
-			and info.cf.LookVector:Dot(cf.LookVector) > 0.98
-			and info.cf.UpVector:Dot(cf.UpVector) > 0.98 then
+		if info.kind == kind and (info.cf.Position - cf.Position).Magnitude < 0.3
+			and info.cf.LookVector:Dot(cf.LookVector) > 0.98 and info.cf.UpVector:Dot(cf.UpVector) > 0.98 then
 			return true
 		end
 	end
@@ -6851,37 +6182,22 @@ end
 
 local function updateGhost(dt)
 	local ray = getRay()
-	if not ray then
-		return
-	end
-
-	-- украшения ставятся на любую поверхность (в том числе на рельсы) и привязываются к сетке в 1 стад
+	if not ray then return end
 	local isDecor = ghostKind == "decor"
 	local gs = isDecor and Decor.GRID or (FM.on and FCFG.GRID or GRID)
-
-	-- точка под курсором: земля (уровень 0) или горизонтальная плоскость нужной высоты
 	local pos
 	if level == 0 then
-		-- на земле: луч до поверхности
 		local filter = { ghost }
-		if not isDecor then
-			table.insert(filter, railsFolder)
-		end
-		if player.Character then
-			table.insert(filter, player.Character)
-		end
+		if not isDecor then table.insert(filter, railsFolder) end
+		if player.Character then table.insert(filter, player.Character) end
 		rayParams.FilterDescendantsInstances = filter
 		local hit = workspace:Raycast(ray.Origin, ray.Direction * 600, rayParams)
 		if hit then
-			if not hit.Instance:IsDescendantOf(railsFolder) then
-				refY = hit.Position.Y
-			end
+			if not hit.Instance:IsDescendantOf(railsFolder) then refY = hit.Position.Y end
 			local hy = isDecor and hit.Position.Y or (hit.Position.Y + BASE_HEIGHT / 2)
 			pos = Vector3.new(math.round(hit.Position.X / gs) * gs, hy, math.round(hit.Position.Z / gs) * gs)
 		end
 	else
-		-- в воздухе: луч до горизонтальной плоскости нужной высоты
-		-- (украшение стоит на верхней грани рельсы этого уровня)
 		local py = refY + (isDecor and BASE_HEIGHT or BASE_HEIGHT / 2) + level * FM.levelStep()
 		local dy = ray.Direction.Y
 		if math.abs(dy) > 1e-4 then
@@ -6895,55 +6211,28 @@ local function updateGhost(dt)
 
 	local tcf, valid, snapEp
 	if isDecor then
-		-- украшение: только поворот вокруг вертикали
-		if pos then
-			tcf = CFrame.new(pos) * CFrame.Angles(0, math.rad(rotTarget), 0)
-			valid = railCount < MAX_RAILS
-		end
+		if pos then tcf = CFrame.new(pos) * CFrame.Angles(0, math.rad(rotTarget), 0); valid = railCount < MAX_RAILS end
 	elseif FM.on then
-		-- магнит: прилипаем к ближайшему свободному концу другой рельсы
-		if FM.magnet and ghostKind ~= "sign" then
-			snapEp = Geo.findMagnet(ray)
-		end
-		if snapEp then
-			tcf = Geo.attachCF(ghostKind, snapEp)
-		elseif pos then
-			tcf = CFrame.new(pos) * Geo.oriCF(rotTarget, FM.pitch, FM.roll)
-		end
+		if FM.magnet and ghostKind ~= "sign" then snapEp = Geo.findMagnet(ray) end
+		if snapEp then tcf = Geo.attachCF(ghostKind, snapEp)
+		elseif pos then tcf = CFrame.new(pos) * Geo.oriCF(rotTarget, FM.pitch, FM.roll) end
 		valid = tcf ~= nil and railCount < MAX_RAILS and not Geo.isDuplicate(ghostKind, tcf)
 	elseif pos then
-		-- обычный режим: рельса всегда стоит строго ровно — только поворот вокруг вертикали на 0 / 90 / 180 / 270
 		tcf = CFrame.new(pos) * CFrame.Angles(0, math.rad(FM.flatYaw(rotTarget)), 0)
 		valid = (railCount < MAX_RAILS) and not tileAt[cellKey(pos.X, pos.Z)]
 	end
 
-	-- призрак «прилип» или «отлип» — обновляем подписи кнопок
 	local snapped = snapEp ~= nil
-	if snapped ~= FM.snapped then
-		FM.snapped = snapped
-		refreshFreeButtons()
-	end
+	if snapped ~= FM.snapped then FM.snapped = snapped; refreshFreeButtons() end
+	if not tcf then ghost.Parent = nil; ghostCF, ghostShown = nil, nil; FUI.mark.Parent = nil; return end
+	ghostCF, ghostValid = tcf, valid
 
-	if not tcf then
-		ghost.Parent = nil
-		ghostCF, ghostShown = nil, nil
-		FUI.mark.Parent = nil
-		return
-	end
-
-	ghostCF = tcf
-	ghostValid = valid
-
-	-- призрак плавно догоняет цель (и по положению, и по повороту)
 	ghostShown = ghostShown and ghostShown:Lerp(tcf, 1 - math.exp(-dt * 20)) or tcf
-	local bob = 0.1 + math.sin(os.clock() * 4) * 0.06
 	ghost.Parent = camera
-	ghost:PivotTo(CFrame.new(0, bob, 0) * ghostShown)
-
+	ghost:PivotTo(CFrame.new(0, 0.1 + math.sin(os.clock() * 4) * 0.06, 0) * ghostShown)
 	ghostHL.FillColor = (not ghostValid) and C.bad or (snapped and C.accent or C.good)
 	ghostHL.FillTransparency = 0.5 + math.sin(os.clock() * 6) * 0.15
 
-	-- светящийся шарик на конце рельсы, к которому прилип призрак
 	if snapEp then
 		local sz = 1.1 + math.sin(os.clock() * 8) * 0.15
 		FUI.mark.Size = Vector3.new(sz, sz, sz)
@@ -6961,113 +6250,69 @@ local function updateHover()
 		local hit = workspace:Raycast(ray.Origin, ray.Direction * 600, hoverParams)
 		if hit then
 			local m = hit.Instance:FindFirstAncestorOfClass("Model")
-			if m and m.Parent == railsFolder then
-				rail = m
-			end
+			if m and m.Parent == railsFolder then rail = m end
 		end
 	end
-	-- «Текст» работает только с табличками, «Вагонетка» — только с рельсами (не с табличками и украшениями)
 	if rail then
 		local kind = rail:GetAttribute("Kind")
 		local isSign = kind == "sign"
-		if (tool == "edit" and not isSign) or (tool == "cart" and (isSign or kind == "decor")) then
-			rail = nil
-		end
+		if (tool == "edit" and not isSign) or (tool == "cart" and (isSign or kind == "decor")) then rail = nil end
 	end
-	if rail ~= hoverRail then
-		hoverRail = rail
-		hoverHL.Parent = rail
-	end
+	if rail ~= hoverRail then hoverRail = rail; hoverHL.Parent = rail end
 	hoverHL.FillColor = (tool == "erase") and C.bad or ((tool == "edit") and C.good or C.warn)
 	hoverHL.FillTransparency = 0.4 + math.sin(os.clock() * 8) * 0.15
 end
 
-local function onRailsChanged()
-	if slotsOpen then
-		refreshSlots()
-	end
-end
+local function onRailsChanged() if slotsOpen then refreshSlots() end end
 
 local function doAction(fromHold)
-	if not buildMode or busy then
-		return
-	end
+	if not buildMode or busy then return end
 	if tool == "erase" then
-		if not hoverRail then
-			return
-		end
+		if not hoverRail then return end
 		local r = hoverRail
-		hoverRail = nil
-		hoverHL.Parent = nil
+		hoverRail = nil; hoverHL.Parent = nil
 		removeRail(r)
-		markDirty()
-		onRailsChanged()
+		markDirty(); onRailsChanged()
 	elseif tool == "cart" then
-		if fromHold or not hoverRail then
-			return
-		end
+		if fromHold or not hoverRail then return end
 		spawnCart(hoverRail)
 	elseif tool == "edit" then
-		if fromHold or not hoverRail then
-			return
-		end
+		if fromHold or not hoverRail then return end
 		setSignText(hoverRail, finalSignText(signText))
-		flashRail(hoverRail, C.warn)
-		markDirty()
+		flashRail(hoverRail, C.warn); markDirty()
 		toast("✏️ Текст таблички обновлён", C.good)
 	else
-		if fromHold and (tool == "sign" or FM.on) then
-			return
-		end
+		if fromHold and (tool == "sign" or FM.on) then return end
 		if railCount >= MAX_RAILS then
-			if os.clock() - lastLimitToast > 2 then
-				lastLimitToast = os.clock()
-				toast("Лимит объектов в слоте: " .. MAX_RAILS, C.bad)
-			end
+			if os.clock() - lastLimitToast > 2 then lastLimitToast = os.clock(); toast("Лимит объектов в слоте: " .. MAX_RAILS, C.bad) end
 			return
 		end
-		if not ghostCF or not ghostValid then
-			return
-		end
+		if not ghostCF or not ghostValid then return end
 		local txt = finalSignText(signText)
 		if tool == "decor" then
-			-- украшение: положение и поворот берём из призрака, наклона и крена нет
 			local x, y, z, yaw = Geo.decompose(ghostCF)
 			spawnPiece("decor", round2(x), round2(y), round2(z), round2(yaw), 0, 0, true, true, nil, Decor.key)
 		elseif FM.on then
-			-- свободная рельса: положение и углы берём прямо из призрака
 			local x, y, z, yaw, pitch, roll = Geo.decompose(ghostCF)
 			spawnPiece(tool, round2(x), round2(y), round2(z), round2(yaw), round2(pitch), round2(roll), true, true, txt, nil, Shop.railSkin(tool))
 		else
-			-- обычная рельса: наклон и крен всегда 0, поворот — только 0 / 90 / 180 / 270
 			local p = ghostCF.Position
 			spawnPiece(tool, p.X, round2(p.Y), p.Z, FM.flatYaw(rotTarget), 0, 0, false, true, txt, nil, Shop.railSkin(tool))
 		end
-		Shop.onPlaced(tool) -- квесты: сколько рельс поставлено, есть ли дом
-		ghostValid = false
-		markDirty()
-		onRailsChanged()
+		Shop.onPlaced(tool); ghostValid = false
+		markDirty(); onRailsChanged()
 	end
 end
 
--- поворот вокруг вертикали: у украшений по 15°, в обычном режиме по 90°, в свободном — на выбранный шаг
 local function rotate(dir)
-	if tool == "decor" then
-		rotTarget += Decor.turnStep() * dir
-	elseif not FM.on then
-		rotTarget += 90 * dir
-	elseif FM.snapped then
-		FM.rel.yaw = FM.wrap(FM.rel.yaw + FM.stepAngle() * dir)
-	else
-		rotTarget += FM.stepAngle() * dir
-	end
+	if tool == "decor" then rotTarget += Decor.turnStep() * dir
+	elseif not FM.on then rotTarget += 90 * dir
+	elseif FM.snapped then FM.rel.yaw = FM.wrap(FM.rel.yaw + FM.stepAngle() * dir)
+	else rotTarget += FM.stepAngle() * dir end
 end
 
--- наклон (pitch) и крен (roll): «в воздухе» — относительно мира, у прилипшего призрака — относительно конца рельсы
 function FM.tilt(which, dir)
-	if not FM.on or tool == "decor" then
-		return
-	end
+	if not FM.on or tool == "decor" then return end
 	local o = FM.snapped and FM.rel or FM
 	o[which] = FM.wrap(o[which] + FM.stepAngle() * dir)
 	refreshFreeButtons()
@@ -7086,309 +6331,151 @@ end
 
 local function setLevel(n)
 	n = math.clamp(n, 0, FM.on and FCFG.MAX_LEVEL or MAX_LEVEL)
-	if n == level then
-		return
-	end
-	level = n
-	hLabel.Text = tostring(level)
+	if n == level then return end
+	level = n; hLabel.Text = tostring(level)
 end
 
 local function sampleRefY()
-	local char = player.Character
-	local rootPart = char and char:FindFirstChild("HumanoidRootPart")
-	if not rootPart then
-		return
-	end
+	local rootPart = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+	if not rootPart then return end
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
-	params.FilterDescendantsInstances = { char, railsFolder }
+	params.FilterDescendantsInstances = { player.Character, railsFolder }
 	local hit = workspace:Raycast(rootPart.Position, Vector3.new(0, -60, 0), params)
-	if hit then
-		refY = hit.Position.Y
-	end
+	if hit then refY = hit.Position.Y end
 end
 
 local function setTool(t)
-	if t == "loop" and not FM.on then
-		t = "straight" -- петля есть только в свободном режиме
-	end
-	tool = t
-	hoverRail = nil
-	hoverHL.Parent = nil
-	holding = false
-	for name, b in pairs(toolBtns) do
-		setActive(b, name == t)
-	end
+	if t == "loop" and not FM.on then t = "straight" end
+	tool = t; hoverRail = nil; hoverHL.Parent = nil; holding = false
+	for name, b in pairs(toolBtns) do setActive(b, name == t) end
 	local placing = isPlacing(t)
-	rotateBtn.Visible = placing
-	hpanel.Visible = placing
+	rotateBtn.Visible = placing; hpanel.Visible = placing
 	signPanel.Visible = (t == "sign" or t == "edit")
-	for _, b in ipairs(FUI.only) do
-		b.Visible = placing and t ~= "decor" -- наклон, крен, магнит и т.д. — только для рельс
-	end
+	for _, b in ipairs(FUI.only) do b.Visible = placing and t ~= "decor" end
 	if placing then
-		if ghostKind ~= t or (t == "decor" and Decor.ghostKey ~= Decor.key) then
-			createGhost(t)
-		end
-	else
-		destroyGhost()
-	end
+		if ghostKind ~= t or (t == "decor" and Decor.ghostKey ~= Decor.key) then createGhost(t) end
+	else destroyGhost() end
 	local act = ACTIONS[t]
-	actionIcon.Text = act[1]
-	actionLbl.Text = act[2]
-	Decor.placeImg.Visible = act[3] == true -- для «Поставить» вместо значка показываем картинку
-	actionIcon.Visible = act[3] ~= true
+	actionIcon.Text = act[1]; actionLbl.Text = act[2]
+	Decor.placeImg.Visible = act[3] == true; actionIcon.Visible = act[3] ~= true
 	hint.Text = hintFor(t)
 end
 
--- переключатель «Свободный режим»
 local function setFreeMode(on)
-	if on == FM.on then
-		return
-	end
+	if on == FM.on then return end
 	local oldStep = FM.levelStep()
 	FM.on = on
-	-- высота хранится в «шагах»: переводим в новые шаги, чтобы рельса осталась на той же высоте
 	level = math.clamp(math.round(level * oldStep / FM.levelStep()), 0, on and FCFG.MAX_LEVEL or MAX_LEVEL)
 	hLabel.Text = tostring(level)
-	-- сбрасываем всё «свободное»: наклон, крен, углы стыка, сторону, прилипание.
-	-- Иначе после выключения режима рельсы могли остаться повёрнутыми не по сетке.
 	FM.resetAngles()
-	if not on then
-		rotTarget = FM.flatYaw(rotTarget) -- обычный режим знает только прямые углы
-	end
-	-- старый призрак выбрасываем и строим заново, чтобы он не тащил за собой старый поворот
-	destroyGhost()
-	ghostValid = false
-	FUI.refreshSwitch(true)
-	refreshFreeButtons()
+	if not on then rotTarget = FM.flatYaw(rotTarget) end
+	destroyGhost(); ghostValid = false
+	FUI.refreshSwitch(true); refreshFreeButtons()
 	FUI.dock.Visible = buildMode and on and not Decor.open
 	layoutBottom()
-	if buildMode then
-		setTool(tool)
-	end
+	if buildMode then setTool(tool) end
 	toast(on and "🔓 Свободный режим: рельсы без правил" or "🔒 Обычный режим: рельсы по сетке", on and C.good or C.sub)
 end
--- ===== Панель украшений: открыть / закрыть / выбрать =====
--- когда панель открыта, обычная нижняя панель (и переключатель свободного режима) скрыты
+
 function Decor.setOpen(on)
-	if on == Decor.open then
-		return
-	end
-	Decor.open = on
-	dock.Visible = not on
-	Decor.dock.Visible = on
+	if on == Decor.open then return end
+	Decor.open = on; dock.Visible = not on; Decor.dock.Visible = on
 	if on then
 		setSlotsOpen(false)
-		if Home.ui and Home.ui.isOpen then
-			Home.ui.setOpen(false)
-		end
+		if Home.ui and Home.ui.isOpen then Home.ui.setOpen(false) end
 		Decor.dock.Position = UDim2.new(0.5, 0, 1, 140)
 		tween(Decor.dock, 0.4, { Position = UDim2.new(0.5, 0, 1, -14) }, Enum.EasingStyle.Back)
-		FUI.card.Visible = false
-		FUI.dock.Visible = false
-		Decor.select(Decor.key) -- подсвечивает выбранную карточку и включает инструмент «украшение»
+		FUI.card.Visible = false; FUI.dock.Visible = false
+		Decor.select(Decor.key)
 	else
 		dock.Position = UDim2.new(0.5, 0, 1, 90)
 		tween(dock, 0.4, { Position = UDim2.new(0.5, 0, 1, -14) }, Enum.EasingStyle.Back)
 		FUI.card.Visible = buildMode
 		FUI.dock.Visible = buildMode and FM.on
-		if tool == "decor" then
-			setTool("straight")
-		end
+		if tool == "decor" then setTool("straight") end
 	end
 	layoutBottom()
 end
 
 function Decor.select(key)
 	Decor.key = key
-	if Decor.turnStep() == 90 then
-		rotTarget = FM.flatYaw(rotTarget) -- стены и двери ставятся строго по прямым углам
-	end
-	for k, b in pairs(Decor.cards) do
-		setActive(b, k == key, C.accentDark)
-	end
-	if Decor.open then
-		setTool("decor") -- если украшение другое, призрак пересоздастся
-	end
+	if Decor.turnStep() == 90 then rotTarget = FM.flatYaw(rotTarget) end
+	for k, b in pairs(Decor.cards) do setActive(b, k == key, C.accentDark) end
+	if Decor.open then setTool("decor") end
 end
 
 local function setBuildMode(on)
-	if on and Home.rec then
-		toast("Сначала сохрани или отмени запись маршрута", C.warn)
-		return
-	end
-	if not on then
-		Decor.setOpen(false) -- выходим из строительства — возвращаем обычную панель
-	end
+	if on and Home.rec then toast("Сначала сохрани или отмени запись маршрута", C.warn); return end
+	if not on then Decor.setOpen(false) end
 	buildMode = on
-	Home.setBuild(on) -- в режиме строительства кнопки дверей отключены
-	Home.refreshNpcBtn() -- и кнопка «НПС» тоже прячется
-	Shop.refreshButtons() -- «Магазин» и «Квесты» тоже
-	allHL.Enabled = on
-	tools.Visible = on
-	divider.Visible = on
-	hint.Visible = on
+	Home.setBuild(on); Home.refreshNpcBtn(); Shop.refreshButtons()
+	allHL.Enabled = on; tools.Visible = on; divider.Visible = on; hint.Visible = on
 	FUI.dock.Visible = on and FM.on
 	if on then
 		FUI.card.Position = UDim2.fromOffset(-250, 10)
 		FUI.card.Visible = true
 		tween(FUI.card, 0.4, { Position = UDim2.fromOffset(14, 10) }, Enum.EasingStyle.Back)
-	else
-		FUI.card.Visible = false
-	end
+	else FUI.card.Visible = false end
 	layoutBottom()
 	buildIcon.Text = ""
 	buildLbl.Text = on and "Выйти" or "Строить"
 	setBase(buildBtn, on and C.badDark or C.goodDark)
-	if on then
-		sampleRefY()
-		setTool(tool)
+	if on then sampleRefY(); setTool(tool)
 	else
-		holding = false
-		hoverRail = nil
-		hoverHL.Parent = nil
-		hpanel.Visible = false
-		signPanel.Visible = false
-		destroyGhost()
+		holding = false; hoverRail = nil; hoverHL.Parent = nil
+		hpanel.Visible = false; signPanel.Visible = false; destroyGhost()
 	end
 end
 
-buildBtn.Activated:Connect(function()
-	setBuildMode(not buildMode)
-end)
-for name, b in pairs(toolBtns) do
-	b.Activated:Connect(function()
-		setTool(name)
-	end)
-end
-rotateBtn.Activated:Connect(function()
-	rotate(1)
-end)
-actionBtn.Activated:Connect(function()
-	doAction(false)
-end)
-hUp.Activated:Connect(function()
-	setLevel(level + 1)
-end)
-hDown.Activated:Connect(function()
-	setLevel(level - 1)
-end)
-hReset.Activated:Connect(function()
-	setLevel(0)
-end)
+-- Подключение кнопок UI
+buildBtn.Activated:Connect(function() setBuildMode(not buildMode) end)
+for name, b in pairs(toolBtns) do b.Activated:Connect(function() setTool(name) end) end
+rotateBtn.Activated:Connect(function() rotate(1) end)
+actionBtn.Activated:Connect(function() doAction(false) end)
+hUp.Activated:Connect(function() setLevel(level + 1) end)
+hDown.Activated:Connect(function() setLevel(level - 1) end)
+hReset.Activated:Connect(function() setLevel(0) end)
+FUI.track.Activated:Connect(function() setFreeMode(not FM.on) end)
+FUI.pitch.Activated:Connect(function() FM.tilt("pitch", 1) end)
+FUI.roll.Activated:Connect(function() FM.tilt("roll", 1) end)
+FUI.side.Activated:Connect(function() FM.flip = not FM.flip; refreshFreeButtons() end)
+FUI.magnet.Activated:Connect(function() FM.toggleMagnet() end)
+FUI.step.Activated:Connect(function() FM.cycleStep() end)
+Decor.btn.Activated:Connect(function() if buildMode then Decor.setOpen(true) end end)
+Decor.backBtn.Activated:Connect(function() Decor.setOpen(false) end)
+Decor.prevBtn.Activated:Connect(function() local sf = Decor.scroll; tween(sf, 0.25, { CanvasPosition = Vector2.new(math.max(0, sf.CanvasPosition.X - 282), 0) }) end)
+Decor.nextBtn.Activated:Connect(function() local sf = Decor.scroll; tween(sf, 0.25, { CanvasPosition = Vector2.new(math.max(0, sf.CanvasPosition.X + 282), 0) }) end)
+Decor.rotateBtn.Activated:Connect(function() rotate(1) end)
+Decor.actionBtn.Activated:Connect(function() doAction(false) end)
+for key, card in pairs(Decor.cards) do card.Activated:Connect(function() Decor.select(key) end) end
 
--- кнопки свободного режима
-FUI.track.Activated:Connect(function()
-	setFreeMode(not FM.on)
-end)
-FUI.pitch.Activated:Connect(function()
-	FM.tilt("pitch", 1)
-end)
-FUI.roll.Activated:Connect(function()
-	FM.tilt("roll", 1)
-end)
-FUI.side.Activated:Connect(function()
-	FM.flip = not FM.flip
-	refreshFreeButtons()
-end)
-FUI.magnet.Activated:Connect(function()
-	FM.toggleMagnet()
-end)
-FUI.step.Activated:Connect(function()
-	FM.cycleStep()
-end)
-
--- кнопки украшений
-Decor.btn.Activated:Connect(function()
-	if buildMode then
-		Decor.setOpen(true)
-	end
-end)
-Decor.backBtn.Activated:Connect(function()
-	Decor.setOpen(false)
-end)
--- стрелки по бокам листают список украшений (примерно на три карточки)
-function Decor.scrollBy(dx)
-	local sf = Decor.scroll
-	tween(sf, 0.25, { CanvasPosition = Vector2.new(math.max(0, sf.CanvasPosition.X + dx), 0) })
-end
-Decor.prevBtn.Activated:Connect(function()
-	Decor.scrollBy(-282)
-end)
-Decor.nextBtn.Activated:Connect(function()
-	Decor.scrollBy(282)
-end)
-Decor.rotateBtn.Activated:Connect(function()
-	rotate(1)
-end)
-Decor.actionBtn.Activated:Connect(function()
-	doAction(false)
-end)
-for key, card in pairs(Decor.cards) do
-	card.Activated:Connect(function()
-		Decor.select(key)
-	end)
-end
-
--- ===== НПС: раздел «Обучение» =====
-Home.npcBtn.Activated:Connect(function()
-	Home.ui.setOpen(not Home.ui.isOpen)
-end)
-Home.ui.closeBtn.Activated:Connect(function()
-	Home.ui.setOpen(false)
-end)
-Home.ui.backdrop.Activated:Connect(function()
-	Home.ui.setOpen(false)
-end)
+-- Подключение кнопок НПС
+Home.npcBtn.Activated:Connect(function() Home.ui.setOpen(not Home.ui.isOpen) end)
+Home.ui.closeBtn.Activated:Connect(function() Home.ui.setOpen(false) end)
+Home.ui.backdrop.Activated:Connect(function() Home.ui.setOpen(false) end)
 for i, c in ipairs(Home.ui.cards) do
-	c.rec.Activated:Connect(function() -- «Запомнить»: начать запись маршрута
-		if Home.rec then
-			toast("Сначала сохрани или отмени текущую запись", C.warn)
-			return
-		end
+	c.rec.Activated:Connect(function()
+		if Home.rec then toast("Сначала сохрани или отмени текущую запись", C.warn); return end
 		Home.ui.setOpen(false)
-		if buildMode then
-			setBuildMode(false)
-		end
+		if buildMode then setBuildMode(false) end
 		Home.startRecord(i)
 	end)
-	c.play.Activated:Connect(function() -- «Отправить»: жители идут по маршруту
-		Home.sendRoute(i)
-	end)
-	c.trash.Activated:Connect(function() -- «Очистить» (нужно нажать дважды)
-		if (Home.rec and Home.rec.slot == i) or #Home.routes[i].pts == 0 then
-			return
-		end
+	c.play.Activated:Connect(function() Home.sendRoute(i) end)
+	c.trash.Activated:Connect(function()
+		if (Home.rec and Home.rec.slot == i) or #Home.routes[i].pts == 0 then return end
 		if not c.armed then
-			c.armed = true
-			Home.ui.refresh()
+			c.armed = true; Home.ui.refresh()
 			toast("Нажми ещё раз: маршрут " .. i .. " будет очищен", C.warn)
-			task.delay(2.5, function()
-				if c.armed then
-					c.armed = false
-					Home.ui.refresh()
-				end
-			end)
+			task.delay(2.5, function() if c.armed then c.armed = false; Home.ui.refresh() end end)
 			return
 		end
-		c.armed = false
-		Home.routes[i] = { name = "Маршрут " .. i, pts = {} }
-		Home.ui.refresh()
-		markDirty()
-		toast("Маршрут " .. i .. " очищен", C.bad)
+		c.armed = false; Home.routes[i] = { name = "Маршрут " .. i, pts = {} }
+		Home.ui.refresh(); markDirty(); toast("Маршрут " .. i .. " очищен", C.bad)
 	end)
 end
-Home.ui.recSave.Activated:Connect(function() -- «Сохранить» записанный маршрут
-	if Home.stopRecord(true) then
-		markDirty()
-	end
-end)
-Home.ui.recCancel.Activated:Connect(function() -- «Отмена»: не сохранять
-	Home.stopRecord(false)
-	toast("Запись отменена", C.sub)
-end)
-
+Home.ui.recSave.Activated:Connect(function() if Home.stopRecord(true) then markDirty() end end)
+Home.ui.recCancel.Activated:Connect(function() Home.stopRecord(false); toast("Запись отменена", C.sub) end)
 -- ===== Ввод =====
 local TOOL_KEYS = {
 	[Enum.KeyCode.One] = "straight",
@@ -7406,73 +6493,48 @@ UserInputService.LastInputTypeChanged:Connect(function(t)
 end)
 
 UserInputService.InputBegan:Connect(function(input, processed)
-	if processed then
-		return
-	end
+	if processed then return end
 	local t = input.UserInputType
 	local back = UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) and -1 or 1
+	
 	if t == Enum.UserInputType.Touch then
-		touchPos = input.Position -- на телефоне тап двигает призрак, ставим кнопкой в панели
+		touchPos = input.Position
 	elseif t == Enum.UserInputType.MouseButton1 then
 		if buildMode then
 			holding = isHoldTool(tool)
 			doAction(false)
 		end
 	elseif input.KeyCode == Enum.KeyCode.R then
-		if buildMode and isPlacing(tool) then
-			rotate(back)
-		end
+		if buildMode and isPlacing(tool) then rotate(back) end
 	elseif input.KeyCode == Enum.KeyCode.T then
-		if buildMode and Decor.railTool(tool) then
-			FM.tilt("pitch", back)
-		end
+		if buildMode and Decor.railTool(tool) then FM.tilt("pitch", back) end
 	elseif input.KeyCode == Enum.KeyCode.Y then
-		if buildMode and Decor.railTool(tool) then
-			FM.tilt("roll", back)
-		end
+		if buildMode and Decor.railTool(tool) then FM.tilt("roll", back) end
 	elseif input.KeyCode == Enum.KeyCode.V then
 		if buildMode and FM.on and Decor.railTool(tool) then
 			FM.flip = not FM.flip
 			refreshFreeButtons()
 		end
 	elseif input.KeyCode == Enum.KeyCode.M then
-		if buildMode and FM.on and not Decor.open then
-			FM.toggleMagnet()
-		end
+		if buildMode and FM.on and not Decor.open then FM.toggleMagnet() end
 	elseif input.KeyCode == Enum.KeyCode.N then
-		if buildMode and FM.on and not Decor.open then
-			FM.cycleStep()
-		end
+		if buildMode and FM.on and not Decor.open then FM.cycleStep() end
 	elseif input.KeyCode == Enum.KeyCode.F then
-		if buildMode and not Decor.open then
-			setFreeMode(not FM.on)
-		end
+		if buildMode and not Decor.open then setFreeMode(not FM.on) end
 	elseif input.KeyCode == Enum.KeyCode.E then
-		if buildMode and isPlacing(tool) then
-			setLevel(level + 1)
-		end
+		if buildMode and isPlacing(tool) then setLevel(level + 1) end
 	elseif input.KeyCode == Enum.KeyCode.Q then
-		if buildMode and isPlacing(tool) then
-			setLevel(level - 1)
-		end
+		if buildMode and isPlacing(tool) then setLevel(level - 1) end
 	elseif input.KeyCode == Enum.KeyCode.G then
-		if buildMode and isPlacing(tool) then
-			setLevel(0)
-		end
+		if buildMode and isPlacing(tool) then setLevel(0) end
 	elseif input.KeyCode == Enum.KeyCode.B then
-		if data and Loading.uiReady then -- пока идут загрузка и появление панелей, строить нельзя
-			setBuildMode(not buildMode)
-		end
+		if data and Loading.uiReady then setBuildMode(not buildMode) end
 	elseif input.KeyCode == Enum.KeyCode.Nine then
-		if buildMode then
-			Decor.setOpen(not Decor.open)
-		end
+		if buildMode then Decor.setOpen(not Decor.open) end
 	elseif TOOL_KEYS[input.KeyCode] and buildMode then
 		local name = TOOL_KEYS[input.KeyCode]
 		if name ~= "loop" or FM.on then
-			if Decor.open then
-				Decor.setOpen(false) -- выбрал другой инструмент — панель украшений закрываем
-			end
+			if Decor.open then Decor.setOpen(false) end
 			setTool(name)
 		end
 	end
@@ -7485,9 +6547,7 @@ UserInputService.InputEnded:Connect(function(input)
 end)
 
 UserInputService.JumpRequest:Connect(function()
-	if cart and cart.riding then
-		setRiding(false)
-	end
+	if cart and cart.riding then setRiding(false) end
 end)
 
 player.CharacterRemoving:Connect(function()
@@ -7497,39 +6557,35 @@ player.CharacterRemoving:Connect(function()
 	end
 end)
 
+-- ===== Главный цикл =====
 RunService.RenderStepped:Connect(function(dt)
 	if Home.needSave then
 		Home.needSave = false
-		markDirty() -- маршрут сохранился сам (дошёл до предельной длины)
+		markDirty()
 	end
-	if Decor.open then
-		Decor.spin(dt) -- модели в карточках крутятся
-	end
+	if Decor.open then Decor.spin(dt) end
 	if buildMode then
 		if tool == "erase" or tool == "cart" or tool == "edit" then
 			updateHover()
 		elseif ghost then
 			updateGhost(dt)
 		end
-		if holding then
-			doAction(true)
-		end
+		if holding then doAction(true) end
 	end
 	stepCart(dt)
 	FX.update(dt)
-	Skins.update(dt) -- анимации скинов (радуга, пульс, глич, ТНТ…)
-	Shop.spin(dt) -- крутятся модели в окнах
+	Skins.update(dt)
+	Shop.spin(dt)
 	Shop.ui.tick(dt)
 end)
 
 -- ===== Старт: загрузка сохранения из файла =====
--- Всё грузится, пока идёт экран загрузки; панели появляются, когда он закончился.
 task.spawn(function()
 	ensureDir()
 	local raw = readJSON(BUILD_FILE)
 
 	data = normalize(raw)
-	saveState = isfolder(SAVE_DIR) and "saved" or "off"
+	saveState = HAS_FILE_IO and "saved" or "off"
 	buildSlotCards()
 	refreshSlots()
 
@@ -7537,16 +6593,16 @@ task.spawn(function()
 	busy = false
 	refreshSlots()
 
-	-- ждём конец экрана загрузки
+	-- Ждём окончания экрана загрузки
 	while not Loading.done do
 		task.wait(0.1)
 	end
 
-	-- 1) карточка игрока падает сверху: аватарка скина, ник и регион
+	-- 1) Карточка игрока падает сверху
 	Profile.drop()
 	task.wait(0.3)
 
-	-- 2) появляются панели; карточка остаётся перед ними (она выше по слоям)
+	-- 2) Появляются панели
 	pill.Position = UDim2.new(0.5, 0, 0, -70)
 	pill.Visible = true
 	tween(pill, 0.5, { Position = UDim2.new(0.5, 0, 0, 10) }, Enum.EasingStyle.Back)
@@ -7555,10 +6611,10 @@ task.spawn(function()
 	tween(dock, 0.5, { Position = UDim2.new(0.5, 0, 1, -14) }, Enum.EasingStyle.Back)
 	Loading.uiReady = true
 
-	-- 3) карточка висит ещё немного, потом уезжает в угол
+	-- 3) Карточка уезжает в угол
 	task.wait(Profile.HOLD)
 	Profile.settle()
 end)
 
--- экономика: загружаем монеты, скины, квесты из файла RailBuilder/economy.json
+-- Экономика загружается параллельно
 task.spawn(Shop.load)
