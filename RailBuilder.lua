@@ -4579,3 +4579,2959 @@ function Shop.chestSequence(skinId)
 		cleanup()
 	end
 end
+-- ===== Рельсы, таблички и украшения: создание / удаление / данные =====
+local function dropIn(m, cf)
+	local nv = Instance.new("NumberValue")
+	nv.Value = 1
+	m:PivotTo(cf * CFrame.new(0, 3, 0))
+	local conn = nv.Changed:Connect(function(v)
+		if m.Parent then
+			m:PivotTo(cf * CFrame.new(0, v * 3, 0))
+		end
+	end)
+	local tw = tween(nv, 0.45, { Value = 0 }, Enum.EasingStyle.Bounce)
+	tw.Completed:Once(function()
+		conn:Disconnect()
+		nv:Destroy()
+		if m.Parent then
+			m:PivotTo(cf)
+		end
+	end)
+end
+
+-- заносим рельсу в списки: путь (по нему ездит вагонетка) и концы (для магнита и для переезда)
+-- у табличек и украшений пути нет
+local function registerPiece(m, kind, cf)
+	local info = { model = m, kind = kind, cf = cf }
+	if kind ~= "sign" and kind ~= "decor" then
+		local d = Geo.localData(kind)
+		local pts, tans, ups, cum = {}, {}, {}, { 0 }
+		for i, pt in ipairs(d.pts) do
+			pts[i] = cf * pt
+			tans[i] = cf:VectorToWorldSpace(d.tans[i])
+			ups[i] = cf:VectorToWorldSpace(d.ups[i])
+			if i > 1 then
+				cum[i] = cum[i - 1] + (pts[i] - pts[i - 1]).Magnitude
+			end
+		end
+		local n = #pts
+		info.pts, info.tans, info.ups, info.cum, info.len = pts, tans, ups, cum, cum[n]
+		-- dir у конца — куда смотрит «продолжение» рельсы (наружу от неё)
+		eps[#eps + 1] = {
+			pos = pts[1], dir = cf:VectorToWorldSpace(-d.sDir), up = cf:VectorToWorldSpace(d.sUp),
+			info = info, which = 1,
+		}
+		eps[#eps + 1] = {
+			pos = pts[n], dir = cf:VectorToWorldSpace(d.eDir), up = cf:VectorToWorldSpace(d.eUp),
+			info = info, which = 2,
+		}
+	end
+	pieces[m] = info
+	return info
+end
+
+-- yaw — поворот вокруг вертикали (у обычных рельс 0 / 90 / 180 / 270), pitch и roll — наклон и крен (у обычных 0);
+-- free = true — свободная рельса (не привязана к клетке сетки); text — текст таблички; deco — ключ украшения из MODELS
+local function spawnPiece(kind, x, y, z, yaw, pitch, roll, free, animate, text, deco, skin)
+	local m
+	if kind == "decor" then
+		m = Decor.newModel(deco, "Rail")
+	else
+		m = newRailModel(kind, "Rail")
+	end
+	local cf = Geo.pieceCF(x, y, z, yaw, pitch, roll)
+	if kind ~= "loop" and kind ~= "decor" and math.abs(pitch) < 0.5 and math.abs(roll) < 0.5 then
+		addSupport(m, x, y, z) -- опора до земли — только под ровными рельсами
+	end
+	m:SetAttribute("Rot", yaw)
+	m:SetAttribute("Pitch", pitch)
+	m:SetAttribute("Roll", roll)
+	m:SetAttribute("Free", free)
+	m:SetAttribute("Kind", kind)
+	m:SetAttribute("Pos", Vector3.new(x, y, z))
+	if kind == "sign" then
+		setSignText(m, text or "")
+	elseif kind == "decor" then
+		m:SetAttribute("Deco", deco)
+	end
+	if skin and (kind == "straight" or kind == "curve" or kind == "ramp") and Skins.defs[skin] then
+		Skins.styleRail(m, kind, skin) -- скин рельсы
+		m:SetAttribute("Skin", skin)
+	end
+	m:PivotTo(cf)
+	m.Parent = railsFolder
+	registerPiece(m, kind, cf)
+	if kind == "decor" and deco == "door" then
+		Home.attachDoor(m, cf) -- кнопка, подсветка, картинка и створка
+	end
+	if not free then
+		tileAt[cellKey(x, z)] = m
+	end
+	railCount += 1
+	if animate then
+		dropIn(m, cf)
+		flashRail(m, C.good)
+	end
+	return m
+end
+
+local function removeRail(m)
+	local p = m:GetAttribute("Pos")
+	if p then
+		local k = cellKey(p.X, p.Z)
+		if tileAt[k] == m then
+			tileAt[k] = nil
+		end
+	end
+	local info = pieces[m]
+	if info then
+		for i = #eps, 1, -1 do
+			if eps[i].info == info then
+				table.remove(eps, i)
+			end
+		end
+		pieces[m] = nil
+	end
+	Home.detachDoor(m)
+	m:Destroy()
+	railCount -= 1
+end
+
+local function serialize()
+	local out = {}
+	for _, m in ipairs(railsFolder:GetChildren()) do
+		if m:IsA("Model") then
+			local p = m:GetAttribute("Pos")
+			if p then
+				local kind = m:GetAttribute("Kind")
+				local entry = {
+					round2(p.X), round2(p.Y), round2(p.Z),
+					round2(m:GetAttribute("Rot") or 0),
+					KIND_CODE[kind] or 0,
+				}
+				if kind == "sign" then
+					entry[6] = m:GetAttribute("Text") or "" -- текст таблички
+				elseif kind == "decor" then
+					entry[6] = m:GetAttribute("Deco") or "gift" -- название украшения
+				end
+				if m:GetAttribute("Free") == true then
+					-- свободная рельса: ещё наклон, крен и метка «свободная»
+					entry[6] = entry[6] or 0
+					entry[7] = round2(m:GetAttribute("Pitch") or 0)
+					entry[8] = round2(m:GetAttribute("Roll") or 0)
+					entry[9] = 1
+				end
+				local skin = m:GetAttribute("Skin")
+				if skin then -- скин рельсы: 10-е значение записи (дыры заполняем нулями)
+					entry[6] = entry[6] or 0
+					entry[7] = entry[7] or 0
+					entry[8] = entry[8] or 0
+					entry[9] = entry[9] or 0
+					entry[10] = skin
+				end
+				out[#out + 1] = entry
+			end
+		end
+	end
+	-- маршруты жителей: { 0, 0, 0, 0, 6, имя, "x,y,z;x,y,z;…", номер слота }
+	for i, r in ipairs(Home.routes) do
+		if #r.pts >= Home.ROUTE_MIN then
+			out[#out + 1] = { 0, 0, 0, 0, KIND_CODE.route, r.name, Home.packRoute(r.pts), i }
+		end
+	end
+	return out
+end
+
+local function clearRails()
+	if cart then
+		removeCart()
+	end
+	for _, m in ipairs(railsFolder:GetChildren()) do
+		if m:IsA("Model") then
+			m:Destroy()
+		end
+	end
+	Home.clearDoors()
+	table.clear(tileAt)
+	table.clear(pieces)
+	table.clear(eps)
+	railCount = 0
+	hoverRail = nil
+	hoverHL.Parent = nil
+end
+
+local function loadRails(rails)
+	for i, r in ipairs(rails) do
+		if type(r) == "table" and r[5] == KIND_CODE.route then
+			Home.loadRoute(r) -- это не рельса, а сохранённый маршрут
+		elseif type(r) == "table"
+			and type(r[1]) == "number" and type(r[2]) == "number"
+			and type(r[3]) == "number" and type(r[4]) == "number"
+			and railCount < MAX_RAILS then
+			local kind = CODE_KIND[r[5]] or "straight"
+			-- украшения всегда «свободные»; неизвестное название (нет в MODELS) — пропускаем
+			local free = (r[9] == 1) or kind == "decor"
+			local deco = (kind == "decor" and type(r[6]) == "string" and Decor.builders[r[6]]) and r[6] or nil
+			if (free or not tileAt[cellKey(r[1], r[3])]) and (kind ~= "decor" or deco) then
+				local text = (kind == "sign" and type(r[6]) == "string") and cleanSignText(r[6]) or nil
+				local pitch = (free and type(r[7]) == "number") and r[7] or 0
+				local roll = (free and type(r[8]) == "number") and r[8] or 0
+				local skin = (type(r[10]) == "string" and Skins.defs[r[10]] and Skins.defs[r[10]].kind == "rail") and r[10] or nil
+				spawnPiece(kind, r[1], r[2], r[3], r[4], pitch, roll, free, false, text, deco, skin)
+			end
+		end
+		if i % 40 == 0 then
+			task.wait()
+		end
+	end
+end
+
+local function normalize(raw)
+	if type(raw) ~= "table" then
+		raw = nil
+	end
+	local d = { active = 1, slots = {} }
+	if raw and type(raw.active) == "number" and raw.active == raw.active then
+		d.active = math.clamp(math.floor(raw.active), 1, SLOT_COUNT)
+	end
+	for i = 1, SLOT_COUNT do
+		local s = raw and type(raw.slots) == "table" and raw.slots[i] or nil
+		d.slots[i] = {
+			name = (type(s) == "table" and type(s.name) == "string") and s.name or ("Слот " .. i),
+			rails = (type(s) == "table" and type(s.rails) == "table") and s.rails or {},
+		}
+	end
+	return d
+end
+
+-- ===== Сохранение =====
+local function flush()
+	if not data then
+		return
+	end
+	if busy then
+		task.delay(1, flush)
+		return
+	end
+	data.slots[data.active].rails = serialize()
+	saveState = "saving"
+	refreshPill()
+	local ok, err = writeJSON(BUILD_FILE, data)
+	saveState = ok and "saved" or "error"
+	if not ok then
+		warn("[Сохранение] " .. tostring(err))
+	end
+	refreshPill()
+	if slotsOpen then
+		refreshSlots()
+	end
+end
+
+local function markDirty()
+	saveState = "saving"
+	refreshPill()
+	if saveQueued then
+		return
+	end
+	saveQueued = true
+	task.delay(SAVE_DELAY, function()
+		saveQueued = false
+		flush()
+	end)
+end
+
+-- ===== Вагонетка: логика =====
+-- Вагонетка едет по «пути» рельсы. Когда путь кончается, она ищет рядом конец другой рельсы
+-- (подходящий и по месту, и по направлению) и переезжает на неё. Так одинаково работают
+-- обычные рельсы, свободные рельсы и мёртвые петли.
+
+-- точка пути на расстоянии s от начала рельсы: позиция, направление и «верх»
+function Geo.samplePath(info, s)
+	local pts, cum = info.pts, info.cum
+	local n = #pts
+	s = math.clamp(s, 0, info.len)
+	local i = 1
+	while i < n - 1 and cum[i + 1] < s do
+		i += 1
+	end
+	local a, b = cum[i], cum[i + 1]
+	local f = (b > a) and (s - a) / (b - a) or 0
+	local pos = pts[i]:Lerp(pts[i + 1], f)
+	local tan = info.tans[i]:Lerp(info.tans[i + 1], f)
+	local up = info.ups[i]:Lerp(info.ups[i + 1], f)
+	return pos, tan.Unit, up
+end
+
+-- поворот вагонетки: нос — по движению, крыша — к «верху» пути (на петле это может быть вниз)
+function Geo.frameFrom(heading, up)
+	local back = -heading
+	local right = up:Cross(back)
+	if right.Magnitude < 1e-4 then
+		right = Vector3.new(1, 0, 0):Cross(back)
+		if right.Magnitude < 1e-4 then
+			right = Vector3.new(0, 0, 1):Cross(back)
+		end
+	end
+	right = right.Unit
+	return CFrame.fromMatrix(Vector3.zero, right, back:Cross(right), back)
+end
+
+-- переезд на следующую рельсу; false — дальше пути нет
+local function advanceCart(c)
+	local info = c.info
+	local pos, tan
+	if c.dir > 0 then
+		pos, tan = info.pts[#info.pts], info.tans[#info.tans]
+	else
+		pos, tan = info.pts[1], -info.tans[1]
+	end
+	local best, bestD
+	for _, ep in ipairs(eps) do
+		if ep.info ~= info then
+			local d = (ep.pos - pos).Magnitude
+			if d < FCFG.END_TOL and (not bestD or d < bestD) and tan:Dot(ep.dir) < -0.5 then
+				best, bestD = ep, d
+			end
+		end
+	end
+	if not best then
+		return false
+	end
+	c.gap += pos - best.pos -- если концы чуть не совпали, вагонетка «доезжает» плавно, без рывка
+	c.info = best.info
+	if best.which == 1 then
+		c.dir, c.s = 1, 0
+	else
+		c.dir, c.s = -1, best.info.len
+	end
+	Skins.entered(c) -- запомнить рельсу и запустить эффект скина рельсы
+	return true
+end
+
+local function spawnCart(tile)
+	local info = pieces[tile]
+	if not info or not info.pts then
+		return
+	end
+	if cart then
+		removeCart()
+	end
+	local s = info.len / 2
+	local pos, tan, up = Geo.samplePath(info, s)
+	-- едем туда, куда смотрит камера
+	local look = camera.CFrame.LookVector
+	local d = Vector3.new(tan.X, 0, tan.Z):Dot(Vector3.new(look.X, 0, look.Z))
+	if math.abs(d) < 1e-3 then
+		d = tan:Dot(look)
+	end
+	local dir = (d >= 0) and 1 or -1
+
+	local model = Skins.newCart(Shop.data.equip.cart) -- надетый скин вагонетки (или обычная)
+	model.Parent = workspace
+	local rot = Geo.frameFrom(tan * dir, up)
+	local cf = CFrame.new(pos) * rot * CFrame.new(0, 0.7, 0)
+	model:PivotTo(cf)
+
+	cart = {
+		model = model, info = info, dir = dir, s = s,
+		speed = 0, running = false, speedIdx = 2, wait = 0, riding = false,
+		cf = cf, lastRot = rot, kink = CFrame.new(), gap = Vector3.zero, rebase = false,
+		seatY = model:GetAttribute("SeatY") or 2.3, seatZ = model:GetAttribute("SeatZ") or 0.1,
+		speedMul = model:GetAttribute("SpeedMul") or 1, skin = Shop.data.equip.cart,
+		startInfo = info, startS = s, startDir = dir, trail = {}, ridePieces = 0, rideDist = 0,
+	}
+	Skins.entered(cart, true)
+	flashRail(model, C.warn)
+	refreshCartHud()
+	toast("🚃 Вагонетка готова — нажми «Ехать»", C.warn)
+end
+
+removeCart = function(msg)
+	if not cart then
+		return
+	end
+	local c = cart
+	cart = nil
+	Skins.release(c)
+	if c.riding then
+		local char = player.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		local root = char and char:FindFirstChild("HumanoidRootPart")
+		if hum then
+			hum.Sit = false
+		end
+		if root then
+			root.CFrame = c.cf * CFrame.new(3.2, 2.5, 0)
+			root.AssemblyLinearVelocity = Vector3.zero
+		end
+	end
+	c.model:Destroy()
+	refreshCartHud()
+	if msg then
+		toast(msg, C.bad)
+	end
+end
+
+local function setRiding(on)
+	if not cart then
+		return
+	end
+	local char = player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not hum or not root then
+		return
+	end
+	cart.riding = on
+	if on then
+		hum.Sit = true
+		toast("🪑 Поехали! Прыжок — слезть", C.accent)
+	else
+		hum.Sit = false
+		root.CFrame = cart.cf * CFrame.new(3.2, 2.5, 0)
+		root.AssemblyLinearVelocity = Vector3.zero
+	end
+	refreshCartHud()
+end
+
+local function stepCart(dt)
+	local c = cart
+	if not c then
+		return
+	end
+	if c.info.model.Parent ~= railsFolder then
+		removeCart("🚃 Вагонетка слетела — рельсу убрали")
+		return
+	end
+
+	if c.wait > 0 then
+		c.wait -= dt
+	elseif c.hold and os.clock() < c.hold then
+		c.speed = 0 -- скин держит вагонетку на месте (невесомость, взрыв и т.д.)
+	else
+		-- в гору медленнее, с горы быстрее (не больше, чем на уклоне)
+		local _, tan0 = Geo.samplePath(c.info, c.s)
+		local climb = math.clamp(tan0.Y * c.dir / math.sin(RAMP_ANGLE), -1, 1)
+		local slope = 1 - 0.25 * climb
+		local goal = c.running and CART_SPEEDS[c.speedIdx] * slope * (c.speedMul or 1)
+			* ((c.slowUntil and os.clock() < c.slowUntil) and c.slowMul or 1) or 0
+		c.speed += (goal - c.speed) * math.min(1, dt * 2.5)
+		if not c.running and c.speed < 0.1 then
+			c.speed = 0
+		end
+		local dist = c.speed * dt
+		c.rideDist = (c.rideDist or 0) + dist
+		for _ = 1, 8 do
+			if dist <= 0 then
+				break
+			end
+			local info = c.info
+			local remain = (c.dir > 0) and (info.len - c.s) or c.s
+			if dist < remain then
+				c.s += c.dir * dist
+				dist = 0
+			else
+				dist -= remain
+				c.s = (c.dir > 0) and info.len or 0
+				c.rebase = true
+				if not advanceCart(c) then
+					Shop.onRideEnd(c) -- квест «прокатись от начала до конца»
+					if Skins.onEnd(c) then
+						break -- ТНТ-вагонетка взрывается и возвращает в начало
+					end
+					-- конец пути: разворот на этой же рельсе
+					c.dir = -c.dir
+					c.speed = 0
+					c.wait = 0.45
+					break
+				end
+			end
+		end
+	end
+
+	-- поза вагонетки: положение берём точно с пути, а поворот при смене рельсы доворачиваем плавно
+	local pos, tan, up = Geo.samplePath(c.info, c.s)
+	local trot = Geo.frameFrom(tan * c.dir, up)
+	if c.rebase then
+		c.kink = trot:Inverse() * c.lastRot
+		c.rebase = false
+	end
+	c.kink = c.kink:Lerp(CFrame.new(), 1 - math.exp(-dt * 10))
+	local rot = trot * c.kink
+	c.lastRot = rot
+	c.gap = c.gap * math.exp(-dt * 10)
+
+	local cf = CFrame.new(pos + c.gap) * rot * CFrame.new(0, 0.7, 0)
+	if c.extra then
+		cf = c.extra * cf -- сдвиг от скина (рельса поднимается, молот отбрасывает)
+	end
+	c.cf = cf
+	c.model:PivotTo(cf)
+
+	if c.riding then
+		local char = player.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		local root = char and char:FindFirstChild("HumanoidRootPart")
+		if hum and root then
+			hum.Sit = true
+			root.CFrame = cf * CFrame.new(0, c.seatY or 2.3, c.seatZ or 0.1)
+			root.AssemblyLinearVelocity = Vector3.zero
+			root.AssemblyAngularVelocity = Vector3.zero
+		else
+			c.riding = false
+			refreshCartHud()
+		end
+	end
+end
+
+-- ===== Камера на большой скорости: «рыбий глаз» =====
+-- Камера не отъезжает назад, а раскрывает угол обзора (FieldOfView): края «растягиваются», как у объектива «рыбий глаз».
+-- Эффект работает, пока ты сидишь в вагонетке; когда замедляешься или слезаешь — угол плавно возвращается.
+function FX.update(dt)
+	local target = 0
+	if cart and cart.riding then
+		target = FX.ADD * math.clamp((cart.speed - FX.START) / (FX.FULL - FX.START), 0, 1)
+	end
+	if target == 0 and FX.add < 0.05 then
+		if FX.add ~= 0 then
+			camera.FieldOfView = math.clamp(camera.FieldOfView - FX.add, 1, 120)
+			FX.add = 0
+		end
+		return
+	end
+	local base = camera.FieldOfView - FX.add -- обычный угол обзора (вдруг его поменял другой скрипт)
+	local k = (target > FX.add) and FX.IN or FX.OUT
+	FX.add += (target - FX.add) * (1 - math.exp(-dt * k))
+	camera.FieldOfView = math.clamp(base + FX.add, 1, 120)
+end
+-- ===== Интерфейс =====
+local gui = make("ScreenGui", {
+	Name = "RailBuilderUI",
+	ResetOnSpawn = false,
+	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+}, player:WaitForChild("PlayerGui"))
+
+local root = make("Frame", { BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1) }, gui)
+local rootScale = make("UIScale", {}, root)
+local function updateScale()
+	local vp = camera.ViewportSize
+	local s = math.clamp(math.min(vp.X / 820, vp.Y / 460), 0.55, 1.2)
+	rootScale.Scale = s
+	root.Size = UDim2.fromScale(1 / s, 1 / s)
+end
+updateScale()
+camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale)
+
+local function corner(o, r)
+	return make("UICorner", { CornerRadius = UDim.new(0, r or 10) }, o)
+end
+
+local function stroke(o, color, th, tr)
+	return make("UIStroke", {
+		Color = color, Thickness = th or 1, Transparency = tr or 0,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+	}, o)
+end
+
+local function pad(o, v, h)
+	h = h or v
+	return make("UIPadding", {
+		PaddingTop = UDim.new(0, v), PaddingBottom = UDim.new(0, v),
+		PaddingLeft = UDim.new(0, h), PaddingRight = UDim.new(0, h),
+	}, o)
+end
+
+local function label(parent, props)
+	local p = { BackgroundTransparency = 1, Font = Enum.Font.GothamMedium, TextSize = 14, TextColor3 = C.text, Text = "" }
+	for k, v in pairs(props) do
+		p[k] = v
+	end
+	return make("TextLabel", p, parent)
+end
+
+local function button(parent, props, base)
+	local p = {
+		AutoButtonColor = false, BackgroundColor3 = base, BorderSizePixel = 0,
+		Font = Enum.Font.GothamBold, TextColor3 = C.text, TextSize = 15, Text = "",
+	}
+	for k, v in pairs(props) do
+		p[k] = v
+	end
+	local b = make("TextButton", p, parent)
+	corner(b, 10)
+	local sc = make("UIScale", {}, b)
+	b:SetAttribute("Base", base)
+	b.MouseEnter:Connect(function()
+		tween(b, 0.12, { BackgroundColor3 = b:GetAttribute("Base"):Lerp(WHITE, 0.12) })
+	end)
+	b.MouseLeave:Connect(function()
+		tween(b, 0.12, { BackgroundColor3 = b:GetAttribute("Base") })
+		tween(sc, 0.1, { Scale = 1 })
+	end)
+	b.MouseButton1Down:Connect(function()
+		tween(sc, 0.08, { Scale = 0.94 })
+	end)
+	b.MouseButton1Up:Connect(function()
+		tween(sc, 0.1, { Scale = 1 })
+	end)
+	return b
+end
+
+local function setBase(b, color)
+	b:SetAttribute("Base", color)
+	tween(b, 0.15, { BackgroundColor3 = color })
+end
+
+local function setActive(b, on, color)
+	setBase(b, on and (color or C.accentDark) or C.card)
+	local st = b:FindFirstChildOfClass("UIStroke")
+	if st then
+		tween(st, 0.15, { Transparency = on and 0 or 1 })
+	end
+end
+
+-- Уведомления сверху
+local toastHolder = make("Frame", {
+	AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 72),
+	Size = UDim2.fromOffset(340, 0), AutomaticSize = Enum.AutomaticSize.Y,
+	BackgroundTransparency = 1, ZIndex = 20,
+}, root)
+make("UIListLayout", {
+	HorizontalAlignment = Enum.HorizontalAlignment.Center,
+	Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder,
+}, toastHolder)
+
+toast = function(text, color)
+	color = color or C.accent
+	local f = make("Frame", {
+		AutomaticSize = Enum.AutomaticSize.XY, Size = UDim2.fromOffset(0, 0),
+		BackgroundColor3 = C.panel, BackgroundTransparency = 1, BorderSizePixel = 0,
+	}, toastHolder)
+	corner(f, 14)
+	local st = stroke(f, color, 1.5, 1)
+	pad(f, 7, 14)
+	local l = label(f, { AutomaticSize = Enum.AutomaticSize.XY, TextTransparency = 1, Text = text })
+	tween(f, 0.2, { BackgroundTransparency = 0.05 })
+	tween(st, 0.2, { Transparency = 0.15 })
+	tween(l, 0.2, { TextTransparency = 0 })
+	task.delay(2.4, function()
+		tween(f, 0.3, { BackgroundTransparency = 1 })
+		tween(st, 0.3, { Transparency = 1 })
+		local tw = tween(l, 0.3, { TextTransparency = 1 })
+		tw.Completed:Once(function()
+			f:Destroy()
+		end)
+	end)
+end
+
+-- ===== Карточка игрока: после загрузки «падает» сверху (аватарка скина, ник и регион смайликом) =====
+-- Оформление как на рисунке: тёмная карточка с толстой чёрной обводкой (UIStroke), круглая аватарка с голубым кольцом,
+-- ник и логин с чёрным контуром букв, голубые линии-акценты и флаг региона в рамочке справа внизу.
+-- Потом появляются панели, а карточка остаётся перед ними (поверх), и чуть позже уезжает в угол.
+do
+	local PW, PH = 300, 118
+	local BLACK = Color3.new(0, 0, 0)
+	local DARK = Color3.fromRGB(20, 24, 36)
+	Profile.W, Profile.H = PW, PH -- размер карточки (нужен, чтобы она уехала в угол ровно)
+
+	local card = make("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0, -150),
+		Size = UDim2.fromOffset(PW, PH), BackgroundColor3 = Color3.fromRGB(40, 48, 66), BorderSizePixel = 0,
+		Visible = false, ZIndex = 30, Rotation = -6, -- ZIndex 30 — выше всех панелей
+	}, root)
+	corner(card, 16)
+	stroke(card, BLACK, 4, 0) -- толстая чёрная обводка
+	Profile.scale = make("UIScale", {}, card)
+
+	-- голубые линии-акценты
+	local function accent(x, y, w, ax)
+		local f = make("Frame", {
+			AnchorPoint = Vector2.new(ax or 0, 0), Position = UDim2.new(ax or 0, x, 0, y), Size = UDim2.fromOffset(w, 3),
+			BackgroundColor3 = C.accent, BorderSizePixel = 0,
+		}, card)
+		corner(f, 2)
+	end
+	-- РельсКоины (это не leaderstats, а просто цифра в карточке) рядом с регионом
+	local coinBox = make("Frame", {
+		Position = UDim2.fromOffset(116, 72), Size = UDim2.fromOffset(100, 38), BackgroundColor3 = BLACK, BorderSizePixel = 0,
+	}, card)
+	corner(coinBox, 11)
+	local coinIn = make("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(93, 31),
+		BackgroundColor3 = DARK, BorderSizePixel = 0,
+	}, coinBox)
+	corner(coinIn, 8)
+	stroke(coinIn, C.accent, 2.5, 0)
+	local coin = make("Frame", {
+		Position = UDim2.fromOffset(7, 5), Size = UDim2.fromOffset(21, 21), BackgroundColor3 = Color3.fromRGB(255, 205, 60), BorderSizePixel = 0,
+	}, coinIn)
+	corner(coin, 11)
+	stroke(coin, BLACK, 2, 0)
+	Profile.coinL = label(coinIn, {
+		Position = UDim2.fromOffset(34, 0), Size = UDim2.new(1, -38, 1, 0), Font = Enum.Font.GothamBold, TextSize = 14,
+		TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = "0",
+	})
+	make("UIStroke", { Color = BLACK, Thickness = 1.5 }, Profile.coinL)
+	accent(-16, 8, 44, 1) -- уголок справа сверху
+
+	-- круглая аватарка (голова твоего скина): чёрное кольцо → голубое кольцо → чёрная линия → аватарка
+	local ringOuter = make("Frame", {
+		Position = UDim2.fromOffset(12, 13), Size = UDim2.fromOffset(92, 92), BackgroundColor3 = BLACK, BorderSizePixel = 0,
+	}, card)
+	corner(ringOuter, 46)
+	local ringBlue = make("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(82, 82),
+		BackgroundColor3 = C.accent, BorderSizePixel = 0,
+	}, ringOuter)
+	corner(ringBlue, 41)
+	local ringIn = make("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(72, 72),
+		BackgroundColor3 = DARK, BorderSizePixel = 0,
+	}, ringBlue)
+	corner(ringIn, 36)
+	stroke(ringIn, BLACK, 3, 0)
+	Profile.avatarImg = make("ImageLabel", {
+		Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Image = "", ScaleType = Enum.ScaleType.Crop,
+	}, ringIn)
+	corner(Profile.avatarImg, 36)
+
+	-- ник и логин (буквы с чёрным контуром)
+	local nameL = label(card, {
+		Position = UDim2.fromOffset(116, 14), Size = UDim2.new(1, -130, 0, 28), Font = Enum.Font.GothamBold, TextSize = 21,
+		TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = player.DisplayName,
+	})
+	make("UIStroke", { Color = BLACK, Thickness = 2 }, nameL)
+	local userL = label(card, {
+		Position = UDim2.fromOffset(116, 42), Size = UDim2.new(1, -130, 0, 18), TextSize = 13, TextColor3 = C.sub,
+		TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = "@" .. player.Name,
+	})
+	make("UIStroke", { Color = BLACK, Thickness = 1.5 }, userL)
+
+	-- регион: флаг-смайлик в рамочке (чёрная кайма + голубая линия) справа внизу
+	local chipOuter = make("Frame", {
+		AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -14, 1, -14), Size = UDim2.fromOffset(64, 38),
+		BackgroundColor3 = BLACK, BorderSizePixel = 0,
+	}, card)
+	corner(chipOuter, 11)
+	local chip = make("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(57, 31),
+		BackgroundColor3 = DARK, BorderSizePixel = 0,
+	}, chipOuter)
+	corner(chip, 8)
+	stroke(chip, C.accent, 2.5, 0)
+	Profile.flagL = label(chip, { Size = UDim2.fromScale(1, 1), TextSize = 21, Text = "🌍" })
+	Profile.card = card
+end
+
+-- показать число РельсКоинов в карточке игрока (рядом с регионом)
+function Profile.setCoins(n)
+	if Profile.coinL then
+		Profile.coinL.Text = Shop.fmt(n)
+	end
+end
+
+-- «RU» → 🇷🇺 (флаг собирается из двух «региональных» символов Unicode)
+function Profile.flag(code)
+	if type(code) ~= "string" or #code ~= 2 then
+		return "🌍"
+	end
+	local a, b = code:upper():byte(1, 2)
+	if a < 65 or a > 90 or b < 65 or b > 90 then
+		return "🌍"
+	end
+	return utf8.char(0x1F1E6 + a - 65, 0x1F1E6 + b - 65)
+end
+
+-- код региона игрока (например "RU"); если Roblox не ответил — берём регион из языка Roblox ("ru-ru" → "RU")
+function Profile.fetchRegion()
+	local service = game:GetService("LocalizationService")
+	local ok, code = pcall(function()
+		return service:GetCountryRegionForPlayerAsync(player)
+	end)
+	if ok and type(code) == "string" and #code == 2 then
+		return code
+	end
+	local ok2, locale = pcall(function()
+		return service.RobloxLocaleId
+	end)
+	if ok2 and type(locale) == "string" then
+		return locale:match("[-_](%a%a)$")
+	end
+	return nil
+end
+
+-- картинка головы скина; миниатюра иногда ещё не готова — пробуем несколько раз
+function Profile.fetchAvatar()
+	local last
+	for _ = 1, 8 do
+		local ok, content, ready = pcall(function()
+			return Players:GetUserThumbnailAsync(player.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
+		end)
+		if ok and content then
+			last = content
+			if ready then
+				break
+			end
+		end
+		task.wait(0.5)
+	end
+	return last
+end
+
+-- грузим аватарку и регион заранее (пока идёт экран загрузки)
+Profile.pending = 2
+function Profile.load()
+	task.spawn(function()
+		local img = Profile.fetchAvatar()
+		if img then
+			Profile.avatarImg.Image = img
+		end
+		Profile.pending -= 1
+	end)
+	task.spawn(function()
+		Profile.flagL.Text = Profile.flag(Profile.fetchRegion())
+		Profile.pending -= 1
+	end)
+end
+task.spawn(Profile.load)
+
+-- карточка падает сверху в центр экрана; возвращает управление, когда приземлилась
+function Profile.drop()
+	local t0 = os.clock()
+	while Profile.pending > 0 and os.clock() - t0 < 2 do -- чуть подождём, если аватарка ещё не загрузилась
+		task.wait(0.1)
+	end
+	local card = Profile.card
+	card.Position = UDim2.new(0.5, 0, 0, -150)
+	card.Rotation = -6
+	Profile.scale.Scale = 1
+	card.Visible = true
+	tween(card, 1.2, { Position = UDim2.new(0.5, 0, 0.5, -20) }, Enum.EasingStyle.Bounce)
+	tween(card, 0.9, { Rotation = 0 }, Enum.EasingStyle.Quint)
+	task.wait(1.2)
+end
+
+-- потом карточка уменьшается и уезжает в правый верхний угол (остаётся поверх панелей) или исчезает
+function Profile.settle()
+	local card = Profile.card
+	if Profile.KEEP then
+		local s = Profile.SMALL
+		tween(Profile.scale, 0.7, { Scale = s }, Enum.EasingStyle.Quint)
+		tween(card, 0.7, { Position = UDim2.new(1, -(14 + Profile.W * s / 2), 0, 10 + Profile.H * s / 2) }, Enum.EasingStyle.Quint)
+	else
+		local tw = tween(card, 0.5, { Position = UDim2.new(0.5, 0, 0, -170), Rotation = 6 }, Enum.EasingStyle.Back, Enum.EasingDirection.In)
+		tw.Completed:Once(function()
+			card.Visible = false
+		end)
+	end
+end
+
+-- Плашка активного слота (сверху по центру)
+local pill = button(root, {
+	AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 10),
+	Size = UDim2.fromOffset(310, 52), Visible = false,
+}, C.panel)
+stroke(pill, WHITE, 1, 0.88)
+label(pill, { Position = UDim2.fromOffset(12, 0), Size = UDim2.fromOffset(30, 52), Font = Enum.Font.GothamBold, TextSize = 22, Text = "📁" })
+local pillTop = label(pill, { Position = UDim2.fromOffset(48, 7), Size = UDim2.new(1, -160, 0, 14), TextSize = 11, TextColor3 = C.sub, TextXAlignment = Enum.TextXAlignment.Left })
+local pillName = label(pill, { Position = UDim2.fromOffset(48, 22), Size = UDim2.new(1, -160, 0, 22), Font = Enum.Font.GothamBold, TextSize = 16, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd })
+local pillSave = label(pill, { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -12, 0.5, 0), Size = UDim2.fromOffset(100, 20), TextSize = 12, TextXAlignment = Enum.TextXAlignment.Right })
+
+refreshPill = function()
+	if not data then
+		return
+	end
+	pillTop.Text = "СЛОТ " .. data.active .. " ИЗ " .. SLOT_COUNT .. "  ·  нажми, чтобы сменить"
+	pillName.Text = data.slots[data.active].name
+	local txt, col = "⚠ не сохраняется", C.sub
+	if saveState == "saved" then
+		txt, col = "✓ сохранено", C.good
+	elseif saveState == "saving" then
+		txt, col = "● сохраняю…", C.warn
+	elseif saveState == "error" then
+		txt, col = "⚠ ошибка", C.bad
+	end
+	pillSave.Text = txt
+	pillSave.TextColor3 = col
+end
+-- Нижняя панель
+local dock = make("Frame", {
+	AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -14),
+	Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.XY,
+	BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false,
+}, root)
+corner(dock, 18)
+stroke(dock, WHITE, 1, 0.88)
+pad(dock, 8)
+make("UIListLayout", {
+	FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8),
+	SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center,
+}, dock)
+
+local function dockButton(parent, icon, text, order, width)
+	local b = button(parent, { Size = UDim2.fromOffset(width or 66, 62), LayoutOrder = order }, C.card)
+	stroke(b, C.accent, 2, 1)
+	local ic = label(b, { Size = UDim2.new(1, 0, 0, 32), Position = UDim2.fromOffset(0, 5), Font = Enum.Font.GothamBold, TextSize = 24, Text = icon })
+	local lb = label(b, { Size = UDim2.new(1, 0, 0, 16), Position = UDim2.new(0, 0, 1, -21), TextSize = 11, TextColor3 = C.sub, Text = text })
+	return b, ic, lb
+end
+
+local buildBtn, buildIcon, buildLbl = dockButton(dock, "🚂", "Строить", 1)
+setBase(buildBtn, C.goodDark)
+local slotsBtn = dockButton(dock, "📁", "Слоты", 2)
+local divider = make("Frame", {
+	Size = UDim2.fromOffset(2, 44), BackgroundColor3 = WHITE, BackgroundTransparency = 0.88,
+	BorderSizePixel = 0, LayoutOrder = 6, Visible = false,
+}, dock)
+local tools = make("Frame", {
+	Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.XY,
+	BackgroundTransparency = 1, LayoutOrder = 7, Visible = false,
+}, dock)
+make("UIListLayout", {
+	FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
+	SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center,
+}, tools)
+
+-- кнопки инструментов чуть уже, чтобы панель с табличками и украшениями поместилась на экран
+local function toolButton(icon, text, order)
+	local b, ic, lb = dockButton(tools, icon, text, order, 58)
+	lb.TextSize = 10
+	return b, ic, lb
+end
+
+-- картинка вместо значка-эмодзи на кнопке
+function Decor.icon(btn, image)
+	return make("ImageLabel", {
+		AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 4), Size = UDim2.fromOffset(34, 34),
+		BackgroundTransparency = 1, Image = image, ScaleType = Enum.ScaleType.Fit,
+	}, btn)
+end
+
+local toolBtns = {}
+toolBtns.straight = toolButton("➖", "Прямая", 1)
+toolBtns.curve = toolButton("↪", "Поворот", 2)
+toolBtns.ramp = toolButton("📐", "Уклон", 3)
+toolBtns.erase = toolButton("❌", "Стереть", 4)
+toolBtns.cart = toolButton("🚃", "Вагонетка", 5)
+toolBtns.sign = toolButton("🪧", "Табличка", 6)
+toolBtns.edit = toolButton("✏️", "Текст", 7)
+do
+	local b, ic = toolButton("🎄", "Декор", 8) -- кнопка «Украшения» (картинка вместо значка)
+	ic.Text = ""
+	Decor.icon(b, IMG.DECOR)
+	Decor.btn = b
+end
+local rotateBtn = toolButton("↻", "Повернуть", 9)
+local actionBtn, actionIcon, actionLbl = toolButton("✔", "Поставить", 10)
+setBase(actionBtn, C.goodDark)
+actionBtn.Visible = UserInputService.TouchEnabled
+Decor.placeImg = Decor.icon(actionBtn, IMG.PLACE) -- картинка «Поставить» вместо галочки
+-- новые картинки на кнопках «Строить» и «Слоты» (вместо значков-смайликов)
+buildIcon.Text = ""
+Decor.icon(buildBtn, Shop.IMG.build)
+slotsBtn:FindFirstChildOfClass("TextLabel").Text = ""
+Decor.icon(slotsBtn, Shop.IMG.slots)
+
+-- ===== Свободный режим: интерфейс =====
+local FUI = {}
+
+-- нижняя панель над основной: петля, наклон, крен, сторона, магнит, шаг угла
+FUI.dock = make("Frame", {
+	AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -100),
+	Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.XY,
+	BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false,
+}, root)
+corner(FUI.dock, 18)
+stroke(FUI.dock, WHITE, 1, 0.88)
+pad(FUI.dock, 8)
+make("UIListLayout", {
+	FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6),
+	SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center,
+}, FUI.dock)
+
+do
+	local function freeButton(key, icon, text, order)
+		local b, _, lb = dockButton(FUI.dock, icon, text, order, 64)
+		FUI[key] = b
+		FUI[key .. "Lbl"] = lb
+		return b
+	end
+	toolBtns.loop = freeButton("loop", "🎢", "Петля", 1) -- «Петля» — такой же инструмент, как остальные
+	freeButton("pitch", "↗", "Наклон", 2)
+	freeButton("roll", "🔃", "Крен", 3)
+	freeButton("side", "↔", "Сторона", 4)
+	freeButton("magnet", "🧲", "Магнит", 5)
+	freeButton("step", "📏", "Шаг", 6)
+	FUI.pitchLbl.TextSize = 10
+	FUI.rollLbl.TextSize = 10
+	FUI.stepLbl.TextSize = 10
+	FUI.only = { FUI.pitch, FUI.roll, FUI.side, FUI.magnet, FUI.step } -- кнопки, нужные только когда что-то ставишь
+end
+
+-- маленький светящийся шарик на конце рельсы, к которому прилип призрак
+FUI.mark = make("Part", {
+	Name = "MagnetMark", Shape = Enum.PartType.Ball, Size = Vector3.new(1.1, 1.1, 1.1),
+	Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false,
+	Material = Enum.Material.Neon, Color = C.accent, Transparency = 0.15,
+})
+
+local function refreshFreeButtons()
+	local o = FM.snapped and FM.rel or FM -- когда призрак прилип, углы считаются от конца рельсы
+	FUI.pitchLbl.Text = "Наклон " .. math.round(o.pitch) .. "°"
+	FUI.rollLbl.Text = "Крен " .. math.round(o.roll) .. "°"
+	FUI.stepLbl.Text = "Шаг " .. FM.stepAngle() .. "°"
+	FUI.magnetLbl.Text = (FM.magnet and FM.snapped) and "Прилип ✓" or "Магнит"
+	setActive(FUI.side, FM.flip, C.accentDark)
+	setActive(FUI.magnet, FM.magnet, C.goodDark)
+end
+refreshFreeButtons()
+
+-- переключатель «Свободный режим» — как на iPhone (слева сверху, виден в режиме строительства)
+do
+	local SW_W, SW_H, KNOB = 54, 32, 28
+	FUI.card = make("Frame", {
+		Position = UDim2.fromOffset(14, 10), Size = UDim2.fromOffset(226, 54),
+		BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false,
+	}, root)
+	corner(FUI.card, 16)
+	stroke(FUI.card, WHITE, 1, 0.88)
+	label(FUI.card, {
+		Position = UDim2.fromOffset(14, 8), Size = UDim2.new(1, -92, 0, 20),
+		Font = Enum.Font.GothamBold, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left,
+		Text = "Свободный режим",
+	})
+	FUI.sub = label(FUI.card, {
+		Position = UDim2.fromOffset(14, 28), Size = UDim2.new(1, -92, 0, 16),
+		TextSize = 11, TextColor3 = C.sub, TextXAlignment = Enum.TextXAlignment.Left,
+	})
+	FUI.track = make("TextButton", {
+		AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -12, 0.5, 0),
+		Size = UDim2.fromOffset(SW_W, SW_H), BackgroundColor3 = C.swOff,
+		AutoButtonColor = false, BorderSizePixel = 0, Text = "",
+	}, FUI.card)
+	corner(FUI.track, SW_H / 2)
+	FUI.knob = make("Frame", {
+		Position = UDim2.fromOffset(2, 2), Size = UDim2.fromOffset(KNOB, KNOB),
+		BackgroundColor3 = WHITE, BorderSizePixel = 0,
+	}, FUI.track)
+	corner(FUI.knob, KNOB / 2)
+	stroke(FUI.knob, Color3.new(0, 0, 0), 1, 0.8) -- лёгкая «тень» вокруг ползунка
+
+	-- положение ползунка и цвет дорожки; animate — плавно, как на iPhone
+	function FUI.refreshSwitch(animate)
+		local on = FM.on
+		local goalPos = UDim2.fromOffset(on and (SW_W - KNOB - 2) or 2, 2)
+		local goalSize = UDim2.fromOffset(KNOB, KNOB)
+		local color = on and C.swOn or C.swOff
+		if animate then
+			tween(FUI.knob, 0.28, { Position = goalPos, Size = goalSize }, Enum.EasingStyle.Quint)
+			tween(FUI.track, 0.22, { BackgroundColor3 = color })
+		else
+			FUI.knob.Position = goalPos
+			FUI.knob.Size = goalSize
+			FUI.track.BackgroundColor3 = color
+		end
+		FUI.sub.Text = on and "без правил · петли" or "по сетке, как обычно"
+		FUI.sub.TextColor3 = on and C.good or C.sub
+	end
+
+	-- пока палец / мышь прижаты, ползунок слегка вытягивается (как у настоящего переключателя)
+	FUI.track.MouseButton1Down:Connect(function()
+		local w = KNOB + 6
+		tween(FUI.knob, 0.1, {
+			Size = UDim2.fromOffset(w, KNOB),
+			Position = UDim2.fromOffset(FM.on and (SW_W - w - 2) or 2, 2),
+		})
+	end)
+	FUI.track.MouseLeave:Connect(function()
+		FUI.refreshSwitch(true)
+	end)
+end
+FUI.refreshSwitch(false)
+
+local hint = make("TextLabel", {
+	AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -106),
+	Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.XY,
+	BackgroundColor3 = C.panel, BackgroundTransparency = 0.2, Font = Enum.Font.GothamMedium,
+	TextSize = 13, TextColor3 = C.text, Text = "", Visible = false,
+}, root)
+corner(hint, 12)
+pad(hint, 7, 14)
+
+local HINTS = {
+	straight = TOUCH_ONLY and "Тапни место → «Поставить»  ·  ▲▼ — высота" or "ЛКМ — поставить  ·  зажми и веди — цепочка  ·  R — повернуть  ·  E / Q — выше / ниже",
+	curve = TOUCH_ONLY and "Тапни место → «Поставить»  ·  поворот соединяет две соседние стороны" or "ЛКМ — поставить поворот  ·  R — повернуть  ·  E / Q — выше / ниже",
+	ramp = TOUCH_ONLY and "Уклон: нижний конец на текущей высоте. Подъём: ▲ после постановки" or "Уклон: нижний конец — на текущей высоте  ·  R — повернуть  ·  E / Q — выше / ниже",
+	erase = TOUCH_ONLY and "Тапни рельсу, табличку или украшение → «Удалить»" or "Наведи на рельсу, табличку или украшение и нажми ЛКМ  ·  зажми и води — стирать подряд",
+	cart = TOUCH_ONLY and "Тапни рельсу → «Поставить» вагонетку" or "Нажми на рельсу, чтобы поставить на неё вагонетку",
+	sign = TOUCH_ONLY and "Напиши текст в поле → тапни место → «Поставить»  ·  ↻ — повернуть" or "Напиши текст в поле выше  ·  ЛКМ — поставить  ·  R — повернуть  ·  E / Q — выше / ниже",
+	edit = TOUCH_ONLY and "Напиши новый текст → тапни табличку → «Применить»" or "Напиши новый текст в поле выше и нажми ЛКМ на табличке",
+	loop = "Мёртвая петля ставится только в свободном режиме",
+	decor = TOUCH_ONLY and "Выбери украшение → тапни место → «Поставить»  ·  ↻ — повернуть" or "ЛКМ — поставить  ·  R — повернуть  ·  E / Q — выше / ниже  ·  можно ставить и на рельсы",
+	-- подсказки свободного режима (для всего, что ставится); короткие, чтобы не залезать на боковые панели
+	free = {
+		place = TOUCH_ONLY and "Тапни место → «Поставить»  ·  внизу: наклон, крен, магнит" or "ЛКМ — поставить  ·  R поворот  ·  T наклон  ·  Y крен  ·  M магнит",
+		loop = TOUCH_ONLY and "Подведи к концу рельсы — прилипнет  ·  «Поставить»" or "Подведи к концу рельсы — прилипнет 🧲  ·  ЛКМ — поставить",
+		sign = TOUCH_ONLY and "Напиши текст → тапни место → «Поставить»" or "Текст в поле выше  ·  ЛКМ — поставить  ·  R / T / Y — повороты",
+	},
+}
+-- { значок, подпись, true = вместо значка показать картинку «Поставить» }
+local ACTIONS = {
+	straight = { "✔", "Поставить", true }, curve = { "✔", "Поставить", true }, ramp = { "✔", "Поставить", true },
+	erase = { "🗑", "Удалить" }, cart = { "🚃", "Поставить", true },
+	sign = { "✔", "Поставить", true }, edit = { "✏️", "Применить" }, loop = { "✔", "Поставить", true },
+	decor = { "✔", "Поставить", true },
+}
+
+-- Поле для текста таблички (над подсказкой)
+local signPanel = make("Frame", {
+	AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -150),
+	Size = UDim2.fromOffset(330, 78),
+	BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false,
+}, root)
+corner(signPanel, 14)
+stroke(signPanel, WHITE, 1, 0.88)
+label(signPanel, {
+	Position = UDim2.fromOffset(12, 6), Size = UDim2.new(1, -90, 0, 16), TextSize = 11, TextColor3 = C.sub,
+	TextXAlignment = Enum.TextXAlignment.Left, Text = "🪧 ТЕКСТ ТАБЛИЧКИ",
+})
+local signCount = label(signPanel, {
+	AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -12, 0, 6), Size = UDim2.fromOffset(70, 16),
+	TextSize = 11, TextColor3 = C.sub, TextXAlignment = Enum.TextXAlignment.Right,
+})
+local signBox = make("TextBox", {
+	Position = UDim2.fromOffset(10, 26), Size = UDim2.new(1, -20, 0, 42),
+	BackgroundColor3 = C.bg, BorderSizePixel = 0, TextColor3 = C.text, PlaceholderColor3 = C.sub,
+	PlaceholderText = "Напиши что угодно…", Font = Enum.Font.GothamMedium, TextSize = 15,
+	ClearTextOnFocus = false, MultiLine = true, TextWrapped = true, ClipsDescendants = true,
+	TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
+	Text = signText,
+}, signPanel)
+corner(signBox, 8)
+pad(signBox, 4, 8)
+
+local function refreshSignCounter()
+	signCount.Text = (utf8.len(signText) or 0) .. "/" .. SIGN_MAX_CHARS
+end
+refreshSignCounter()
+
+signBox:GetPropertyChangedSignal("Text"):Connect(function()
+	local t = cleanSignText(signBox.Text)
+	if t ~= signBox.Text then
+		signBox.Text = t -- вызовет это событие ещё раз уже с чистым текстом
+		return
+	end
+	signText = t
+	refreshSignCounter()
+	if ghost and ghostKind == "sign" then
+		setSignText(ghost, signText) -- призрак показывает текст сразу
+	end
+end)
+
+signBox.FocusLost:Connect(function()
+	local t = finalSignText(signBox.Text)
+	if t ~= signBox.Text then
+		signBox.Text = t
+	end
+end)
+
+-- когда над основной панелью висит панель свободного режима (или открыта панель украшений, она выше),
+-- подсказку и поле текста поднимаем выше
+local function layoutBottom()
+	local extra = 0
+	if Decor.open then
+		extra = 46
+	elseif FUI.dock.Visible then
+		extra = 80
+	end
+	hint.Position = UDim2.new(0.5, 0, 1, -106 - extra)
+	signPanel.Position = UDim2.new(0.5, 0, 1, -150 - extra)
+end
+-- ===== Панель украшений: заменяет нижнюю панель, пока открыта =====
+-- в каждой карточке крутится модель (ViewportFrame), а не картинка
+Decor.dock = make("Frame", {
+	AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -14),
+	Size = UDim2.fromOffset(0, 0), AutomaticSize = Enum.AutomaticSize.XY,
+	BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false,
+}, root)
+corner(Decor.dock, 18)
+stroke(Decor.dock, WHITE, 1, 0.88)
+pad(Decor.dock, 8)
+make("UIListLayout", {
+	FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8),
+	SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center,
+}, Decor.dock)
+
+Decor.backBtn = dockButton(Decor.dock, "◀", "Назад", 1, 62)
+Decor.prevBtn = button(Decor.dock, { Size = UDim2.fromOffset(30, 100), LayoutOrder = 2, Text = "‹", TextSize = 28 }, C.card)
+-- карточек много, поэтому они лежат в прокручиваемом списке: тяни пальцем / мышью или жми стрелки по бокам
+Decor.scroll = make("ScrollingFrame", {
+	Size = UDim2.fromOffset(86 * 4.5 + 8 * 4, 108), LayoutOrder = 3,
+	BackgroundTransparency = 1, BorderSizePixel = 0, ScrollingDirection = Enum.ScrollingDirection.X,
+	ScrollBarThickness = 4, ScrollBarImageColor3 = C.sub,
+	CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.X,
+}, Decor.dock)
+pad(Decor.scroll, 3)
+make("UIListLayout", {
+	FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder,
+}, Decor.scroll)
+Decor.nextBtn = button(Decor.dock, { Size = UDim2.fromOffset(30, 100), LayoutOrder = 4, Text = "›", TextSize = 28 }, C.card)
+for i, item in ipairs(Decor.list) do
+	local card = button(Decor.scroll, { Size = UDim2.fromOffset(86, 100), LayoutOrder = i }, C.card)
+	stroke(card, C.accent, 2, 1)
+	Decor.addSpinner(card, item.key)
+	label(card, {
+		Position = UDim2.fromOffset(0, 72), Size = UDim2.new(1, 0, 0, 16),
+		Font = Enum.Font.GothamBold, TextSize = 12, Text = item.name,
+	})
+	label(card, {
+		Position = UDim2.fromOffset(0, 87), Size = UDim2.new(1, 0, 0, 12),
+		TextSize = 9, TextColor3 = C.sub, Text = item.tag,
+	})
+	Decor.cards[item.key] = card
+end
+make("Frame", {
+	Size = UDim2.fromOffset(2, 44), BackgroundColor3 = WHITE, BackgroundTransparency = 0.88,
+	BorderSizePixel = 0, LayoutOrder = 20,
+}, Decor.dock)
+Decor.rotateBtn = dockButton(Decor.dock, "↻", "Повернуть", 21, 62)
+do
+	local b, ic = dockButton(Decor.dock, "", "Поставить", 22, 62)
+	Decor.actionBtn = b
+	setBase(b, C.goodDark)
+	b.Visible = UserInputService.TouchEnabled
+	Decor.icon(b, IMG.PLACE)
+end
+
+-- Панель высоты (слева)
+local hpanel = make("Frame", {
+	AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 14, 0.4, 0),
+	Size = UDim2.fromOffset(78, 0), AutomaticSize = Enum.AutomaticSize.Y,
+	BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false,
+}, root)
+corner(hpanel, 16)
+stroke(hpanel, WHITE, 1, 0.88)
+pad(hpanel, 8)
+make("UIListLayout", {
+	Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder,
+	HorizontalAlignment = Enum.HorizontalAlignment.Center,
+}, hpanel)
+label(hpanel, { Size = UDim2.new(1, 0, 0, 14), TextSize = 11, TextColor3 = C.sub, Text = "ВЫСОТА", LayoutOrder = 0 })
+local hUp = button(hpanel, { Size = UDim2.new(1, 0, 0, 42), LayoutOrder = 1, Text = "▲", TextSize = 20 }, C.card)
+local hLabel = label(hpanel, { Size = UDim2.new(1, 0, 0, 30), Font = Enum.Font.GothamBold, TextSize = 24, Text = "0", LayoutOrder = 2 })
+local hDown = button(hpanel, { Size = UDim2.new(1, 0, 0, 42), LayoutOrder = 3, Text = "▼", TextSize = 20 }, C.card)
+local hReset = button(hpanel, { Size = UDim2.new(1, 0, 0, 32), LayoutOrder = 4, Text = "🌍 земля", TextSize = 11 }, C.bg)
+
+-- Панель вагонетки (справа)
+local hud = make("Frame", {
+	AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -14, 0.45, 0),
+	Size = UDim2.fromOffset(180, 0), AutomaticSize = Enum.AutomaticSize.Y,
+	BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false,
+}, root)
+corner(hud, 16)
+stroke(hud, WHITE, 1, 0.88)
+pad(hud, 10)
+make("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, hud)
+label(hud, { Size = UDim2.new(1, 0, 0, 24), Font = Enum.Font.GothamBold, TextSize = 16, Text = "🚃 Вагонетка", LayoutOrder = 0 })
+local function hudButton(text, order, base)
+	return button(hud, { Size = UDim2.new(1, 0, 0, 40), LayoutOrder = order, Text = text, TextSize = 14 }, base or C.card)
+end
+local hudGo = hudButton("▶ Ехать", 1, C.goodDark)
+local hudRev = hudButton("⇄ Развернуть", 2)
+local hudSpeed = hudButton("", 3)
+local hudRide = hudButton("🪑 Сесть", 4)
+local hudDel = hudButton("✖ Убрать", 5, C.badDark)
+local hudHint = label(hud, { Size = UDim2.new(1, 0, 0, 30), TextSize = 11, TextColor3 = C.sub, TextWrapped = true, LayoutOrder = 6 })
+
+refreshCartHud = function()
+	hud.Visible = cart ~= nil
+	if not cart then
+		return
+	end
+	hudGo.Text = cart.running and "⏸ Стоп" or "▶ Ехать"
+	setBase(hudGo, cart.running and C.badDark or C.goodDark)
+	hudSpeed.Text = CART_SPEED_NAMES[cart.speedIdx]
+	hudRide.Text = cart.riding and "🚪 Слезть" or "🪑 Сесть"
+	hudHint.Text = cart.riding and "Прыжок — тоже слезть" or "Сядь, чтобы прокатиться"
+end
+
+hudGo.Activated:Connect(function()
+	if cart then
+		cart.running = not cart.running
+		refreshCartHud()
+	end
+end)
+hudRev.Activated:Connect(function()
+	if cart then
+		cart.dir = -cart.dir
+		cart.speed = 0
+		cart.wait = 0
+		cart.rebase = true -- вагонетка плавно развернётся на месте
+	end
+end)
+hudSpeed.Activated:Connect(function()
+	if cart then
+		cart.speedIdx = cart.speedIdx % #CART_SPEEDS + 1
+		refreshCartHud()
+	end
+end)
+hudRide.Activated:Connect(function()
+	if cart then
+		setRiding(not cart.riding)
+	end
+end)
+hudDel.Activated:Connect(function()
+	removeCart("🚃 Вагонетка убрана")
+end)
+
+-- ===== Панель слотов =====
+local backdrop = make("TextButton", {
+	Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 1,
+	AutoButtonColor = false, Text = "", Visible = false, ZIndex = 5,
+}, root)
+local panel = make("Frame", {
+	AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+	Size = UDim2.new(0, 400, 0.9, 0), BackgroundColor3 = C.panel, BorderSizePixel = 0, Active = true,
+}, backdrop)
+corner(panel, 18)
+stroke(panel, WHITE, 1, 0.85)
+make("UISizeConstraint", { MaxSize = Vector2.new(400, 470) }, panel)
+local panelScale = make("UIScale", {}, panel)
+
+label(panel, { Position = UDim2.fromOffset(18, 12), Size = UDim2.new(1, -80, 0, 26), Font = Enum.Font.GothamBold, TextSize = 21, TextXAlignment = Enum.TextXAlignment.Left, Text = "📁 Слоты строительства" })
+label(panel, { Position = UDim2.fromOffset(18, 39), Size = UDim2.new(1, -80, 0, 18), TextSize = 12, TextColor3 = C.sub, TextXAlignment = Enum.TextXAlignment.Left, Text = "Каждый слот — отдельная постройка. Нажми на слот, чтобы открыть." })
+local closeBtn = button(panel, { AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -12, 0, 12), Size = UDim2.fromOffset(36, 36), Text = "✕", TextSize = 16 }, C.card)
+
+local list = make("ScrollingFrame", {
+	Position = UDim2.fromOffset(12, 70), Size = UDim2.new(1, -24, 1, -128),
+	BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 4,
+	ScrollBarImageColor3 = C.sub, CanvasSize = UDim2.new(),
+	AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y,
+}, panel)
+make("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }, list)
+local footer = label(panel, {
+	AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 18, 1, -10), Size = UDim2.new(1, -36, 0, 42),
+	TextSize = 12, TextColor3 = C.sub, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
+})
+
+local cards = {}
+
+refreshSlots = function()
+	if not data then
+		return
+	end
+	for i, c in ipairs(cards) do
+		local active = (i == data.active)
+		local count = active and railCount or #data.slots[i].rails
+		c.name.Text = data.slots[i].name
+		local countText = (count == 0) and "Пусто" or objWord(count)
+		c.info.Text = active
+			and ('<font color="#50E18C"><b>● АКТИВНЫЙ</b></font>  ·  ' .. countText)
+			or (countText .. "  ·  нажми, чтобы открыть")
+		tween(c.stroke, 0.15, { Transparency = active and 0 or 1 })
+		setBase(c.card, active and Color3.fromRGB(34, 66, 56) or C.card)
+		c.badge.BackgroundColor3 = active and C.good or C.bg
+		c.badge.TextColor3 = active and C.bg or C.text
+	end
+	if saveState == "off" then
+		footer.Text = "⚠ Сохранение между заходами выключено: слоты работают, но пропадут при выходе."
+		footer.TextColor3 = C.warn
+	elseif saveState == "saving" then
+		footer.Text = "● Сохраняю…"
+		footer.TextColor3 = C.warn
+	elseif saveState == "error" then
+		footer.Text = "⚠ Не удалось сохранить. Попробую снова при следующем изменении."
+		footer.TextColor3 = C.bad
+	else
+		footer.Text = "✓ Всё сохранено — постройки вернутся при следующем заходе."
+		footer.TextColor3 = C.good
+	end
+	refreshPill()
+end
+
+local function setSlotsOpen(on)
+	if on and Shop.closeShopWindows then
+		Shop.closeShopWindows() -- «Магазин» и «Квесты» закрываем
+	end
+	if on and Home.ui and Home.ui.isOpen then
+		Home.ui.setOpen(false) -- «НПС» и «Слоты» не открываются одновременно
+	end
+	slotsOpen = on
+	setActive(slotsBtn, on, C.accentDark)
+	if on then
+		refreshSlots()
+		backdrop.Visible = true
+		panelScale.Scale = 0.88
+		tween(backdrop, 0.2, { BackgroundTransparency = 0.45 })
+		tween(panelScale, 0.3, { Scale = 1 }, Enum.EasingStyle.Back)
+	else
+		local tw = tween(backdrop, 0.15, { BackgroundTransparency = 1 })
+		tween(panelScale, 0.15, { Scale = 0.92 })
+		tw.Completed:Once(function()
+			if not slotsOpen then
+				backdrop.Visible = false
+			end
+		end)
+	end
+end
+
+local function switchSlot(i)
+	if busy or i == data.active then
+		return
+	end
+	busy = true
+	data.slots[data.active].rails = serialize()
+	clearRails()
+	data.active = i
+	refreshSlots()
+	loadRails(data.slots[i].rails)
+	busy = false
+	refreshSlots()
+	markDirty()
+	toast("📁 Открыт слот " .. i .. ": " .. data.slots[i].name, C.accent)
+end
+
+local function commitName(i, text)
+	local name = text:match("^%s*(.-)%s*$")
+	local len = utf8.len(name)
+	if len and len >= 1 and len <= 20 and name ~= data.slots[i].name then
+		data.slots[i].name = name
+		refreshSlots()
+		markDirty()
+		toast("✏️ Слот " .. i .. " переименован", C.good)
+	end
+end
+
+local function buildSlotCards()
+	for i = 1, SLOT_COUNT do
+		local card = button(list, { Size = UDim2.new(1, -8, 0, 68), LayoutOrder = i }, C.card)
+		local st = stroke(card, C.good, 2, 1)
+		local badge = label(card, {
+			Position = UDim2.fromOffset(12, 15), Size = UDim2.fromOffset(38, 38),
+			BackgroundTransparency = 0, BackgroundColor3 = C.bg,
+			Font = Enum.Font.GothamBold, TextSize = 18, Text = tostring(i),
+		})
+		corner(badge, 19)
+		local nameL = label(card, {
+			Position = UDim2.fromOffset(62, 10), Size = UDim2.new(1, -160, 0, 24),
+			Font = Enum.Font.GothamBold, TextSize = 16,
+			TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+		})
+		local info = label(card, {
+			Position = UDim2.fromOffset(62, 36), Size = UDim2.new(1, -160, 0, 20),
+			TextSize = 12, TextColor3 = C.sub, RichText = true, TextXAlignment = Enum.TextXAlignment.Left,
+		})
+		local box = make("TextBox", {
+			Position = nameL.Position, Size = nameL.Size, BackgroundColor3 = C.bg, TextColor3 = C.text,
+			Font = Enum.Font.GothamBold, TextSize = 15, ClearTextOnFocus = false,
+			PlaceholderText = "Название (до 20 символов)", TextXAlignment = Enum.TextXAlignment.Left,
+			Visible = false, BorderSizePixel = 0,
+		}, card)
+		corner(box, 8)
+		pad(box, 0, 8)
+
+		local edit = button(card, { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -52, 0.5, 0), Size = UDim2.fromOffset(34, 34), Text = "✏️", TextSize = 15 }, C.bg)
+		local trash = button(card, { AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0), Size = UDim2.fromOffset(34, 34), Text = "🗑", TextSize = 15 }, C.bg)
+
+		card.Activated:Connect(function()
+			if not box.Visible then
+				switchSlot(i)
+			end
+		end)
+
+		edit.Activated:Connect(function()
+			nameL.Visible = false
+			box.Text = data.slots[i].name
+			box.Visible = true
+			box:CaptureFocus()
+		end)
+		box.FocusLost:Connect(function()
+			box.Visible = false
+			nameL.Visible = true
+			commitName(i, box.Text)
+		end)
+
+		local armed = false
+		local function disarm()
+			armed = false
+			trash.Text = "🗑"
+			setBase(trash, C.bg)
+		end
+		trash.Activated:Connect(function()
+			if busy then
+				return
+			end
+			if not armed then
+				armed = true
+				trash.Text = "❓"
+				setBase(trash, C.badDark)
+				toast("Нажми ещё раз — слот " .. i .. " будет очищен", C.warn)
+				task.delay(2.5, function()
+					if armed then
+						disarm()
+					end
+				end)
+				return
+			end
+			disarm()
+			if i == data.active then
+				clearRails()
+			else
+				data.slots[i].rails = {}
+			end
+			refreshSlots()
+			markDirty()
+			toast("🗑 Слот " .. i .. " очищен", C.bad)
+		end)
+
+		cards[i] = { card = card, stroke = st, badge = badge, name = nameL, info = info }
+	end
+end
+-- ===== Кнопка «НПС» (появляется, когда построена дверь) и раздел «Обучение» =====
+-- В «Обучении» — слоты маршрутов. В каждом слоте один ровный ряд из трёх кнопок: Запомнить (записать свой путь и сохранить),
+-- Отправить (жители пойдут по маршруту) и Очистить.
+Home.npcBtn = dockButton(dock, "", "НПС", 3, 66)
+Decor.icon(Home.npcBtn, Home.NPC_IMAGE)
+Home.npcBtn.BackgroundTransparency = 1 -- фон кнопки полностью прозрачный: видна только картинка
+Home.npcBtn.Visible = false
+function Home.refreshNpcBtn()
+	Home.npcBtn.Visible = next(Home.doors) ~= nil and not buildMode -- есть хотя бы одна дверь (в режиме строительства кнопка прячется)
+end
+
+Home.ui = { isOpen = false, cards = {} }
+do
+	local ui = Home.ui
+	ui.backdrop = make("TextButton", {
+		Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 1,
+		AutoButtonColor = false, Text = "", Visible = false, ZIndex = 5,
+	}, root)
+	local panel = make("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.new(0, 420, 0.9, 0), BackgroundColor3 = C.panel, BorderSizePixel = 0, Active = true,
+	}, ui.backdrop)
+	corner(panel, 18)
+	stroke(panel, WHITE, 1, 0.85)
+	make("UISizeConstraint", { MaxSize = Vector2.new(420, 480) }, panel)
+	ui.scale = make("UIScale", {}, panel)
+
+	-- заголовок: в начале картинка, потом слово «НПС»
+	make("ImageLabel", {
+		Position = UDim2.fromOffset(18, 12), Size = UDim2.fromOffset(30, 30), BackgroundTransparency = 1,
+		Image = Home.TITLE_IMAGE, ScaleType = Enum.ScaleType.Fit,
+	}, panel)
+	label(panel, {
+		Position = UDim2.fromOffset(56, 12), Size = UDim2.new(1, -170, 0, 30), Font = Enum.Font.GothamBold, TextSize = 22,
+		TextXAlignment = Enum.TextXAlignment.Left, Text = "НПС",
+	})
+	ui.closeBtn = button(panel, {
+		AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -14, 0, 12), Size = UDim2.fromOffset(86, 30),
+		Text = "Закрыть", TextSize = 13,
+	}, C.card)
+
+	-- раздел «Обучение»
+	local tab = make("Frame", {
+		Position = UDim2.fromOffset(18, 52), Size = UDim2.fromOffset(130, 28),
+		BackgroundColor3 = C.accentDark, BorderSizePixel = 0,
+	}, panel)
+	corner(tab, 14)
+	label(tab, { Size = UDim2.fromScale(1, 1), Font = Enum.Font.GothamBold, TextSize = 13, Text = "Обучение" })
+	label(panel, {
+		Position = UDim2.fromOffset(18, 88), Size = UDim2.new(1, -36, 0, 34), TextSize = 12, TextColor3 = C.sub,
+		TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
+		Text = "Запомнить: пройди маршрут сам и нажми «Сохранить». Отправить: жители повторят его. Очистить: убрать маршрут из слота.",
+	})
+
+	local rlist = make("ScrollingFrame", {
+		Position = UDim2.fromOffset(12, 128), Size = UDim2.new(1, -24, 1, -176),
+		BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 4,
+		ScrollBarImageColor3 = C.sub, CanvasSize = UDim2.new(),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y,
+	}, panel)
+	make("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }, rlist)
+	ui.footer = label(panel, {
+		AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 18, 1, -10), Size = UDim2.new(1, -36, 0, 32),
+		TextSize = 12, TextColor3 = C.sub, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
+	})
+
+	-- слоты маршрутов: сверху номер, название и сведения, снизу ровный ряд из трёх кнопок одинаковой ширины
+	for i = 1, Home.ROUTE_SLOTS do
+		local card = button(rlist, { Size = UDim2.new(1, -8, 0, 100), LayoutOrder = i }, C.card)
+		local st = stroke(card, C.bad, 2, 1)
+		local badge = label(card, {
+			Position = UDim2.fromOffset(12, 10), Size = UDim2.fromOffset(36, 36),
+			BackgroundTransparency = 0, BackgroundColor3 = C.bg,
+			Font = Enum.Font.GothamBold, TextSize = 17, Text = tostring(i),
+		})
+		corner(badge, 18)
+		label(card, {
+			Position = UDim2.fromOffset(58, 9), Size = UDim2.new(1, -70, 0, 22), Font = Enum.Font.GothamBold, TextSize = 15,
+			TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = "Маршрут " .. i,
+		})
+		local info = label(card, {
+			Position = UDim2.fromOffset(58, 31), Size = UDim2.new(1, -70, 0, 18), TextSize = 12, TextColor3 = C.sub,
+			RichText = true, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+		})
+		local row = make("Frame", {
+			Position = UDim2.fromOffset(12, 54), Size = UDim2.new(1, -24, 0, 36), BackgroundTransparency = 1,
+		}, card)
+		make("UIGridLayout", {
+			FillDirection = Enum.FillDirection.Horizontal, CellPadding = UDim2.fromOffset(8, 0),
+			CellSize = UDim2.new(1 / 3, -6, 1, 0), SortOrder = Enum.SortOrder.LayoutOrder,
+		}, row)
+		local rec = button(row, { LayoutOrder = 1, Text = "Запомнить", TextSize = 13 }, C.badDark)
+		local play = button(row, { LayoutOrder = 2, Text = "Отправить", TextSize = 13 }, C.goodDark)
+		local trash = button(row, { LayoutOrder = 3, Text = "Очистить", TextSize = 13 }, C.bg)
+		ui.cards[i] = {
+			card = card, stroke = st, badge = badge, info = info, rec = rec, play = play, trash = trash, armed = false,
+		}
+	end
+
+	-- обновить надписи и вид кнопок в слотах
+	function ui.refresh()
+		for i, c in ipairs(ui.cards) do
+			local r = Home.routes[i]
+			local n = r and #r.pts or 0
+			local has = n >= Home.ROUTE_MIN
+			local recording = Home.rec ~= nil and Home.rec.slot == i
+			if recording then
+				c.info.Text = '<font color="#FF6060"><b>Идёт запись…</b></font>'
+			elseif has then
+				c.info.Text = n .. " точек, " .. math.floor(Home.routeLength(r.pts)) .. " студов"
+			else
+				c.info.Text = "Пусто"
+			end
+			setBase(c.play, has and C.goodDark or C.bg) -- нет маршрута — «Отправить» тусклая
+			c.play.TextColor3 = has and C.text or C.sub
+			setBase(c.trash, c.armed and C.badDark or C.bg)
+			c.trash.Text = c.armed and "Точно?" or "Очистить"
+			c.trash.TextColor3 = (has or c.armed) and C.text or C.sub
+			c.badge.BackgroundColor3 = has and C.good or C.bg
+			c.badge.TextColor3 = has and C.bg or C.text
+			tween(c.stroke, 0.15, { Transparency = recording and 0 or 1 })
+		end
+		if saveState == "off" then
+			ui.footer.Text = "Сохранение между заходами выключено: маршруты работают, но пропадут при выходе."
+			ui.footer.TextColor3 = C.warn
+		else
+			ui.footer.Text = "Маршруты сохраняются вместе со слотом постройки."
+			ui.footer.TextColor3 = C.sub
+		end
+	end
+
+	function ui.setOpen(on)
+		ui.isOpen = on
+		setActive(Home.npcBtn, on, C.accentDark)
+		if on then
+			if slotsOpen then
+				setSlotsOpen(false)
+			end
+			Shop.closeShopWindows()
+			ui.refresh()
+			ui.backdrop.Visible = true
+			ui.scale.Scale = 0.88
+			tween(ui.backdrop, 0.2, { BackgroundTransparency = 0.45 })
+			tween(ui.scale, 0.3, { Scale = 1 }, Enum.EasingStyle.Back)
+		else
+			local tw = tween(ui.backdrop, 0.15, { BackgroundTransparency = 1 })
+			tween(ui.scale, 0.15, { Scale = 0.92 })
+			tw.Completed:Once(function()
+				if not ui.isOpen then
+					ui.backdrop.Visible = false
+				end
+			end)
+		end
+	end
+
+	-- панелька «идёт запись» (слева сверху): заголовок, сведения и два ровных кнопки внизу
+	ui.hud = make("Frame", {
+		Position = UDim2.fromOffset(14, 10), Size = UDim2.fromOffset(240, 92),
+		BackgroundColor3 = C.panel, BackgroundTransparency = 0.06, BorderSizePixel = 0, Visible = false, ZIndex = 6,
+	}, root)
+	corner(ui.hud, 16)
+	stroke(ui.hud, C.bad, 2, 0.2)
+	label(ui.hud, {
+		Position = UDim2.fromOffset(14, 8), Size = UDim2.new(1, -28, 0, 20), Font = Enum.Font.GothamBold, TextSize = 14,
+		TextColor3 = C.bad, TextXAlignment = Enum.TextXAlignment.Left, Text = "ЗАПИСЬ МАРШРУТА",
+	})
+	ui.hudInfo = label(ui.hud, {
+		Position = UDim2.fromOffset(14, 30), Size = UDim2.new(1, -28, 0, 16), TextSize = 12, TextColor3 = C.sub,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	})
+	local hrow = make("Frame", {
+		Position = UDim2.fromOffset(12, 52), Size = UDim2.new(1, -24, 0, 30), BackgroundTransparency = 1,
+	}, ui.hud)
+	make("UIGridLayout", {
+		FillDirection = Enum.FillDirection.Horizontal, CellPadding = UDim2.fromOffset(8, 0),
+		CellSize = UDim2.new(0.5, -4, 1, 0), SortOrder = Enum.SortOrder.LayoutOrder,
+	}, hrow)
+	ui.recSave = button(hrow, { LayoutOrder = 1, Text = "Сохранить", TextSize = 13 }, C.goodDark)
+	ui.recCancel = button(hrow, { LayoutOrder = 2, Text = "Отмена", TextSize = 13 }, C.badDark)
+	function ui.updateRec()
+		local rec = Home.rec
+		if rec then
+			ui.hudInfo.Text = "Слот " .. rec.slot .. ": " .. #rec.pts .. " точек, " .. math.floor(rec.length) .. " студов"
+		end
+	end
+	function ui.showRec(on)
+		ui.hud.Visible = on
+		if on then
+			ui.updateRec()
+		end
+	end
+	ui.refresh()
+end
+
+-- ===== Магазин и квесты: кнопки, окна и карточка выпавшего предмета =====
+-- Окно-панель в том же стиле, что и «Слоты» и «НПС»
+function Shop.window(title, image)
+	local w = { isOpen = false }
+	w.backdrop = make("TextButton", {
+		Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 1,
+		AutoButtonColor = false, Text = "", Visible = false, ZIndex = 5,
+	}, root)
+	local panel = make("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.new(0, 440, 0.9, 0), BackgroundColor3 = C.panel, BorderSizePixel = 0, Active = true,
+	}, w.backdrop)
+	corner(panel, 18)
+	stroke(panel, WHITE, 1, 0.85)
+	make("UISizeConstraint", { MaxSize = Vector2.new(440, 500) }, panel)
+	w.scale = make("UIScale", {}, panel)
+	make("ImageLabel", {
+		Position = UDim2.fromOffset(18, 12), Size = UDim2.fromOffset(30, 30), BackgroundTransparency = 1,
+		Image = image, ScaleType = Enum.ScaleType.Fit,
+	}, panel)
+	label(panel, {
+		Position = UDim2.fromOffset(56, 12), Size = UDim2.new(1, -170, 0, 30), Font = Enum.Font.GothamBold, TextSize = 22,
+		TextXAlignment = Enum.TextXAlignment.Left, Text = title,
+	})
+	w.closeBtn = button(panel, {
+		AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -14, 0, 12), Size = UDim2.fromOffset(86, 30),
+		Text = "Закрыть", TextSize = 13,
+	}, C.card)
+	w.body = make("Frame", {
+		Position = UDim2.fromOffset(0, 52), Size = UDim2.new(1, 0, 1, -52), BackgroundTransparency = 1,
+	}, panel)
+	function w.setOpen(on)
+		w.isOpen = on
+		if on then
+			Shop.closeShopWindows(w)
+			if slotsOpen then
+				setSlotsOpen(false)
+			end
+			if Home.ui and Home.ui.isOpen then
+				Home.ui.setOpen(false)
+			end
+			if w.onOpen then
+				w.onOpen()
+			end
+			w.backdrop.Visible = true
+			w.scale.Scale = 0.88
+			tween(w.backdrop, 0.2, { BackgroundTransparency = 0.45 })
+			tween(w.scale, 0.3, { Scale = 1 }, Enum.EasingStyle.Back)
+		else
+			local tw = tween(w.backdrop, 0.15, { BackgroundTransparency = 1 })
+			tween(w.scale, 0.15, { Scale = 0.92 })
+			tw.Completed:Once(function()
+				if not w.isOpen then
+					w.backdrop.Visible = false
+				end
+			end)
+		end
+	end
+	w.closeBtn.Activated:Connect(function()
+		w.setOpen(false)
+	end)
+	w.backdrop.Activated:Connect(function()
+		w.setOpen(false)
+	end)
+	Shop.windows[#Shop.windows + 1] = w
+	return w
+end
+-- кнопки «Магазин» и «Квесты» в нижней панели (в режиме строительства прячутся, чтобы панель не вылезала за экран)
+Shop.shopBtn = dockButton(dock, "", "Магазин", 4, 66)
+Decor.icon(Shop.shopBtn, Shop.IMG.shop)
+Shop.questBtn = dockButton(dock, "", "Квесты", 5, 66)
+Decor.icon(Shop.questBtn, Shop.IMG.quests)
+function Shop.refreshButtons()
+	Shop.shopBtn.Visible = not buildMode
+	Shop.questBtn.Visible = not buildMode
+end
+
+Shop.ui = {}
+do
+	local ui = Shop.ui
+	local GOLD = Color3.fromRGB(255, 205, 60)
+	local BLACK = Color3.new(0, 0, 0)
+
+	-- ---------- Окно «Магазин» ----------
+	local sw = Shop.window("Магазин", Shop.IMG.shop)
+	ui.shop = sw
+	ui.err = label(sw.body, {
+		Position = UDim2.fromOffset(18, 0), Size = UDim2.new(1, -36, 0, 18), TextSize = 12, TextColor3 = C.bad,
+		TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+	})
+	local tabShop = button(sw.body, {
+		Position = UDim2.fromOffset(18, 24), Size = UDim2.fromOffset(110, 28), Text = "Магазин", TextSize = 13,
+	}, C.accentDark)
+	local tabSkins = button(sw.body, {
+		Position = UDim2.fromOffset(136, 24), Size = UDim2.fromOffset(110, 28), Text = "Мои скины", TextSize = 13,
+	}, C.card)
+	ui.balance = label(sw.body, {
+		AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -18, 0, 24), Size = UDim2.fromOffset(190, 28),
+		Font = Enum.Font.GothamBold, TextSize = 13, TextColor3 = GOLD, TextXAlignment = Enum.TextXAlignment.Right,
+	})
+	local pageShop = make("Frame", {
+		Position = UDim2.fromOffset(0, 62), Size = UDim2.new(1, 0, 1, -62), BackgroundTransparency = 1,
+	}, sw.body)
+	ui.skinPage = make("ScrollingFrame", {
+		Position = UDim2.fromOffset(12, 62), Size = UDim2.new(1, -24, 1, -70), BackgroundTransparency = 1,
+		BorderSizePixel = 0, ScrollBarThickness = 4, ScrollBarImageColor3 = C.sub, CanvasSize = UDim2.new(),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y, Visible = false,
+	}, sw.body)
+	make("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }, ui.skinPage)
+	ui.empty = label(sw.body, {
+		Position = UDim2.fromOffset(18, 90), Size = UDim2.new(1, -36, 0, 40), TextSize = 13, TextColor3 = C.sub,
+		TextWrapped = true, Visible = false, Text = "Пока пусто. Купи сундук в магазине, и скины появятся здесь.",
+	})
+
+	-- карточка сундука
+	local cc = make("Frame", {
+		Position = UDim2.fromOffset(18, 6), Size = UDim2.new(1, -36, 0, 210), BackgroundColor3 = C.card, BorderSizePixel = 0,
+	}, pageShop)
+	corner(cc, 14)
+	stroke(cc, WHITE, 1, 0.9)
+	Shop.addViewport(cc, Shop.newChest(), UDim2.fromOffset(8, 12), UDim2.fromOffset(160, 150))
+	label(cc, {
+		Position = UDim2.fromOffset(178, 12), Size = UDim2.new(1, -190, 0, 26), Font = Enum.Font.GothamBold, TextSize = 20,
+		TextXAlignment = Enum.TextXAlignment.Left, Text = "Сундук",
+	})
+	label(cc, {
+		Position = UDim2.fromOffset(178, 40), Size = UDim2.new(1, -190, 0, 18), TextSize = 13, TextColor3 = GOLD,
+		TextXAlignment = Enum.TextXAlignment.Left, Text = "Цена: " .. Shop.PRICE .. " РельсКоинов",
+	})
+	for i, ch in ipairs(Shop.CHANCES) do
+		local rar = Skins.RARITY[ch[1]]
+		label(cc, {
+			Position = UDim2.fromOffset(178, 66 + (i - 1) * 18), Size = UDim2.new(1, -190, 0, 16), TextSize = 12,
+			TextColor3 = rar.color, TextXAlignment = Enum.TextXAlignment.Left, Text = rar.name .. ": " .. ch[2] .. "%",
+		})
+	end
+	ui.buy = button(cc, {
+		AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -12), Size = UDim2.new(1, -28, 0, 36),
+		Text = "Купить", TextSize = 15,
+	}, C.goodDark)
+	ui.buy.Activated:Connect(function()
+		Shop.buy()
+	end)
+
+	local function showTab(skins)
+		pageShop.Visible = not skins
+		ui.skinPage.Visible = skins
+		setBase(tabShop, skins and C.card or C.accentDark)
+		setBase(tabSkins, skins and C.accentDark or C.card)
+		ui.refresh()
+	end
+	tabShop.Activated:Connect(function()
+		showTab(false)
+	end)
+	tabSkins.Activated:Connect(function()
+		showTab(true)
+	end)
+	sw.onOpen = function()
+		ui.refresh()
+	end
+
+	-- ---------- Окно «Квесты» ----------
+	local qw = Shop.window("Квесты", Shop.IMG.quests)
+	ui.quests = qw
+	ui.qerr = label(qw.body, {
+		Position = UDim2.fromOffset(18, 0), Size = UDim2.new(1, -36, 0, 18), TextSize = 12, TextColor3 = C.bad,
+		TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+	})
+	ui.timer = label(qw.body, {
+		Position = UDim2.fromOffset(18, 22), Size = UDim2.new(1, -36, 0, 18), TextSize = 12, TextColor3 = C.sub,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	})
+	ui.qlist = make("ScrollingFrame", {
+		Position = UDim2.fromOffset(12, 46), Size = UDim2.new(1, -24, 1, -54), BackgroundTransparency = 1,
+		BorderSizePixel = 0, ScrollBarThickness = 4, ScrollBarImageColor3 = C.sub, CanvasSize = UDim2.new(),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y,
+	}, qw.body)
+	make("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }, ui.qlist)
+	qw.onOpen = function()
+		ui.refresh()
+	end
+
+	-- ---------- Карточка выпавшего предмета ----------
+	local rev = make("Frame", {
+		Size = UDim2.fromScale(1, 1), BackgroundColor3 = BLACK, BackgroundTransparency = 0.35, BorderSizePixel = 0,
+		Visible = false, ZIndex = 40, Active = true,
+	}, root)
+	local card = make("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(340, 440),
+		BackgroundColor3 = Color3.fromRGB(16, 18, 28), BorderSizePixel = 0, ClipsDescendants = true, ZIndex = 41,
+	}, rev)
+	corner(card, 20)
+	local cardStroke = stroke(card, WHITE, 3, 0)
+	ui.revScale = make("UIScale", {}, card)
+	ui.revBg = make("ImageLabel", { -- крутящаяся картинка на фоне
+		AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.45), Size = UDim2.fromOffset(720, 720),
+		BackgroundTransparency = 1, Image = Shop.IMG.card, ImageTransparency = 0.2, ZIndex = 1,
+	}, card)
+	make("Frame", {
+		AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.fromScale(1, 0.4),
+		BackgroundColor3 = BLACK, BackgroundTransparency = 0.25, BorderSizePixel = 0, ZIndex = 2,
+	}, card)
+	label(card, {
+		Position = UDim2.fromOffset(0, 14), Size = UDim2.new(1, 0, 0, 28), Font = Enum.Font.GothamBold, TextSize = 22,
+		Text = "Тебе выпало!", ZIndex = 4,
+	})
+	ui.revRar = label(card, {
+		Position = UDim2.fromOffset(0, 262), Size = UDim2.new(1, 0, 0, 22), Font = Enum.Font.GothamBold, TextSize = 16, ZIndex = 4,
+	})
+	ui.revName = label(card, {
+		Position = UDim2.fromOffset(10, 286), Size = UDim2.new(1, -20, 0, 30), Font = Enum.Font.GothamBold, TextSize = 22,
+		TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 4,
+	})
+	ui.revInfo = label(card, {
+		Position = UDim2.fromOffset(20, 320), Size = UDim2.new(1, -40, 0, 54), TextSize = 13, TextColor3 = C.sub,
+		TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top, ZIndex = 4,
+	})
+	local ok = button(card, {
+		AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -16), Size = UDim2.fromOffset(180, 40),
+		Text = "Забрать", TextSize = 16, ZIndex = 5,
+	}, C.goodDark)
+	ui.rev = rev
+
+	function ui.showReveal(skinId, onClose)
+		local def = Skins.defs[skinId]
+		local rar = Skins.RARITY[def.rarity]
+		ui.revClose = onClose
+		cardStroke.Color = rar.color
+		ui.revRar.Text = rar.name
+		ui.revRar.TextColor3 = rar.color
+		ui.revName.Text = def.name
+		ui.revInfo.Text = def.info
+		if ui.revVP then
+			Shop.removeSpinner(ui.revModel)
+			ui.revVP:Destroy()
+		end
+		ui.revModel = Skins.preview(skinId)
+		ui.revVP = Shop.addViewport(card, ui.revModel, UDim2.fromOffset(45, 50), UDim2.fromOffset(250, 205))
+		ui.revVP.ZIndex = 3
+		rev.Visible = true
+		ui.revScale.Scale = 0.6
+		tween(ui.revScale, 0.45, { Scale = 1 }, Enum.EasingStyle.Back)
+	end
+
+	ok.Activated:Connect(function()
+		rev.Visible = false
+		if ui.revVP then
+			Shop.removeSpinner(ui.revModel)
+			ui.revVP:Destroy()
+			ui.revVP = nil
+		end
+		local cb = ui.revClose
+		ui.revClose = nil
+		if cb then
+			cb()
+		end
+	end)
+
+	-- ---------- Обновление окон ----------
+	function ui.refresh()
+		local d = Shop.data
+		local errText = Shop.err and ("Ошибка: " .. Shop.err) or (Shop.lastError or "")
+		ui.err.Text = errText
+		ui.qerr.Text = errText
+		ui.balance.Text = "Баланс: " .. Shop.fmt(d.coins) .. " РельсКоинов"
+		local can = d.coins >= Shop.PRICE and not Shop.busy
+		setBase(ui.buy, can and C.goodDark or C.card)
+		ui.buy.TextColor3 = can and C.text or C.sub
+		ui.buy.Text = "Купить за " .. Shop.PRICE
+
+		-- мои скины
+		for _, ch in ipairs(ui.skinPage:GetChildren()) do
+			if ch:IsA("GuiObject") then
+				ch:Destroy()
+			end
+		end
+		local any = false
+		for i, id in ipairs(Skins.list) do
+			local n = d.owned[id]
+			if n and n > 0 then
+				any = true
+				local def = Skins.defs[id]
+				local rar = Skins.RARITY[def.rarity]
+				local card2 = make("Frame", {
+					Size = UDim2.new(1, -8, 0, 64), BackgroundColor3 = C.card, BorderSizePixel = 0, LayoutOrder = i,
+				}, ui.skinPage)
+				corner(card2, 12)
+				corner(make("Frame", {
+					Position = UDim2.fromOffset(8, 8), Size = UDim2.new(0, 5, 1, -16), BackgroundColor3 = rar.color, BorderSizePixel = 0,
+				}, card2), 3)
+				label(card2, {
+					Position = UDim2.fromOffset(22, 8), Size = UDim2.new(1, -140, 0, 24), Font = Enum.Font.GothamBold, TextSize = 15,
+					TextColor3 = rar.color, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+					Text = def.name,
+				})
+				label(card2, {
+					Position = UDim2.fromOffset(22, 34), Size = UDim2.new(1, -140, 0, 20), TextSize = 12, TextColor3 = C.sub,
+					TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+					Text = ((def.kind == "rail") and "Рельса" or "Вагонетка") .. " · " .. rar.name .. ((n > 1) and (" · x" .. n) or ""),
+				})
+				local equipped = (def.kind == "rail" and d.equip.rail == id) or (def.kind == "cart" and d.equip.cart == id)
+				local b = button(card2, {
+					AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0), Size = UDim2.fromOffset(100, 34),
+					Text = equipped and "Снять" or "Надеть", TextSize = 13,
+				}, equipped and C.badDark or C.goodDark)
+				b.Activated:Connect(function()
+					Shop.equipSkin(def.kind, equipped and "" or id)
+				end)
+			end
+		end
+		ui.empty.Visible = ui.skinPage.Visible and not any
+
+		-- квесты
+		for _, ch in ipairs(ui.qlist:GetChildren()) do
+			if ch:IsA("GuiObject") then
+				ch:Destroy()
+			end
+		end
+		for i, qid in ipairs(Shop.ORDER) do
+			local cfg = Shop.QUESTS[qid]
+			local q
+			for _, rec in ipairs(d.quests) do
+				if rec.id == qid then
+					q = rec
+				end
+			end
+			local goal = q and q.goal or cfg.goal
+			local progress = q and math.min(q.progress or 0, goal) or 0
+			local done = progress >= goal
+			local claimed = q and q.claimed
+			local card2 = make("Frame", {
+				Size = UDim2.new(1, -8, 0, 108), BackgroundColor3 = C.card, BorderSizePixel = 0, LayoutOrder = i,
+			}, ui.qlist)
+			corner(card2, 12)
+			label(card2, {
+				Position = UDim2.fromOffset(14, 8), Size = UDim2.new(1, -28, 0, 22), Font = Enum.Font.GothamBold, TextSize = 15,
+				TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, RichText = true, Text = cfg.title,
+			})
+			label(card2, {
+				Position = UDim2.fromOffset(14, 30), Size = UDim2.new(1, -28, 0, 18), TextSize = 12, TextColor3 = C.sub,
+				TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Text = cfg.text,
+			})
+			label(card2, {
+				Position = UDim2.fromOffset(14, 50), Size = UDim2.new(1, -28, 0, 18), Font = Enum.Font.GothamBold, TextSize = 13,
+				TextColor3 = GOLD, TextXAlignment = Enum.TextXAlignment.Left,
+				Text = q and ("Награда: " .. Shop.fmt(q.reward) .. " РельсКоинов") or "Награда: случайная",
+			})
+			local track = make("Frame", {
+				Position = UDim2.fromOffset(14, 78), Size = UDim2.new(1, -150, 0, 18), BackgroundColor3 = C.bg, BorderSizePixel = 0,
+			}, card2)
+			corner(track, 9)
+			local fill = make("Frame", {
+				Size = UDim2.new(math.clamp(progress / goal, 0, 1), 0, 1, 0), BackgroundColor3 = done and C.good or C.accent, BorderSizePixel = 0,
+			}, track)
+			corner(fill, 9)
+			local txt = label(track, {
+				Size = UDim2.fromScale(1, 1), Font = Enum.Font.GothamBold, TextSize = 11, Text = progress .. " / " .. goal,
+			})
+			make("UIStroke", { Color = BLACK, Thickness = 1 }, txt)
+			local state = claimed and "Получено" or (done and "Забрать" or "В процессе")
+			local b = button(card2, {
+				AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -12, 1, -10), Size = UDim2.fromOffset(112, 34),
+				Text = state, TextSize = 13,
+			}, (done and not claimed) and C.goodDark or C.bg)
+			b.TextColor3 = (done and not claimed) and C.text or C.sub
+			b.Activated:Connect(function()
+				if done and not claimed then
+					Shop.claim(qid)
+				end
+			end)
+		end
+	end
+
+	-- каждый кадр: крутим фон карточки, раз в секунду обновляем таймер квестов
+	local acc = 0
+	function ui.tick(dt)
+		if rev.Visible then
+			ui.revBg.Rotation = (ui.revBg.Rotation + dt * 25) % 360
+		end
+		acc += dt
+		if acc >= 1 then
+			acc = 0
+			if qw.isOpen then
+				local left = math.max(0, math.floor(Shop.data.refreshAt - os.time()))
+				ui.timer.Text = string.format("Новые квесты через %02d:%02d:%02d", left // 3600, (left % 3600) // 60, left % 60)
+			end
+		end
+	end
+	ui.refresh()
+end
+
+Shop.shopBtn.Activated:Connect(function()
+	Shop.ui.shop.setOpen(not Shop.ui.shop.isOpen)
+end)
+Shop.questBtn.Activated:Connect(function()
+	Shop.ui.quests.setOpen(not Shop.ui.quests.isOpen)
+end)
+
+pill.Activated:Connect(function()
+	setSlotsOpen(not slotsOpen)
+end)
+slotsBtn.Activated:Connect(function()
+	setSlotsOpen(not slotsOpen)
+end)
+closeBtn.Activated:Connect(function()
+	setSlotsOpen(false)
+end)
+backdrop.Activated:Connect(function()
+	setSlotsOpen(false)
+end)
+-- ===== Призрак, подсветка под курсором, действия =====
+-- инструменты-рельсы (их можно наклонять, крутить в свободном режиме, они стыкуются магнитом)
+function Decor.railTool(t)
+	return t == "straight" or t == "curve" or t == "ramp" or t == "sign" or t == "loop"
+end
+
+local function isPlacing(t)
+	return Decor.railTool(t) or t == "decor"
+end
+
+-- инструменты, которые можно «тянуть» зажатой кнопкой мыши
+-- (в свободном режиме рельсы ставятся по одной — иначе магнит за секунду выстроил бы бесконечную цепочку)
+local function isHoldTool(t)
+	if t == "erase" then
+		return true
+	end
+	return (not FM.on) and (t == "straight" or t == "curve" or t == "ramp")
+end
+
+local function hintFor(t)
+	if t == "decor" then
+		return HINTS.decor
+	end
+	if FM.on and isPlacing(t) then
+		return HINTS.free[t] or HINTS.free.place
+	end
+	return HINTS[t]
+end
+
+local function destroyGhost()
+	if ghost then
+		ghost:Destroy()
+	end
+	ghost, ghostKind, ghostHL, ghostShown, ghostCF = nil, nil, nil, nil, nil
+	Decor.ghostKey = nil
+	FUI.mark.Parent = nil
+	FM.snapped = false
+end
+
+local function createGhost(kind)
+	destroyGhost()
+	if kind == "decor" then
+		ghost = Decor.newModel(Decor.key, "Ghost")
+		Decor.ghostKey = Decor.key
+	else
+		ghost = newRailModel(kind, "Ghost")
+	end
+	ghostKind = kind
+	if kind == "sign" then
+		setSignText(ghost, signText)
+	end
+	for _, d in ipairs(ghost:GetDescendants()) do
+		if d:IsA("BasePart") then
+			d.CanCollide = false
+			d.CanQuery = false
+			d.CanTouch = false
+			if d.Name ~= "Origin" then
+				d.Transparency = 0.35
+			end
+		elseif d:IsA("TextLabel") then
+			d.TextTransparency = 0.3
+		end
+	end
+	ghostHL = make("Highlight", {
+		OutlineColor = WHITE, FillColor = C.good,
+		DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
+	}, ghost)
+end
+
+local function getRay()
+	if lastInputTouch then
+		if not touchPos then
+			return nil
+		end
+		return camera:ScreenPointToRay(touchPos.X, touchPos.Y)
+	end
+	local m = UserInputService:GetMouseLocation()
+	return camera:ViewportPointToRay(m.X, m.Y)
+end
+
+-- ----- Магнит (свободный режим) -----
+-- конец рельсы «свободен», если рядом нет конца другой рельсы
+function Geo.endpointOpen(ep)
+	for _, o in ipairs(eps) do
+		if o.info ~= ep.info and (o.pos - ep.pos).Magnitude < 0.8 then
+			return false
+		end
+	end
+	return true
+end
+
+-- ближайший к лучу свободный конец рельсы (чем дальше конец, тем щедрее допуск)
+function Geo.findMagnet(ray)
+	local best, bestD
+	for _, ep in ipairs(eps) do
+		local v = ep.pos - ray.Origin
+		local t = v:Dot(ray.Direction)
+		if t > 1 and t < 250 then
+			local d = (v - ray.Direction * t).Magnitude
+			if d < FCFG.MAGNET + t * 0.015 and (not bestD or d < bestD) and Geo.endpointOpen(ep) then
+				best, bestD = ep, d
+			end
+		end
+	end
+	return best
+end
+
+-- где окажется рельса, если стыковать её с концом ep: началом (обычно) или концом («Сторона»);
+-- FM.rel — доворот от идеального продолжения (по умолчанию нули — рельса продолжает путь ровно)
+function Geo.attachCF(kind, ep)
+	local lf = Geo.localFrames(kind)
+	local rel = Geo.oriCF(FM.rel.yaw, FM.rel.pitch, FM.rel.roll)
+	if FM.flip then
+		return Geo.frameCF(ep.pos, -ep.dir, ep.up) * rel * lf.e:Inverse()
+	end
+	return Geo.frameCF(ep.pos, ep.dir, ep.up) * rel * lf.s:Inverse()
+end
+
+-- такая же рельса уже стоит ровно в этом месте (две одинаковые друг на друге не нужны)
+function Geo.isDuplicate(kind, cf)
+	for _, info in pairs(pieces) do
+		if info.kind == kind
+			and (info.cf.Position - cf.Position).Magnitude < 0.3
+			and info.cf.LookVector:Dot(cf.LookVector) > 0.98
+			and info.cf.UpVector:Dot(cf.UpVector) > 0.98 then
+			return true
+		end
+	end
+	return false
+end
+
+local function updateGhost(dt)
+	local ray = getRay()
+	if not ray then
+		return
+	end
+
+	-- украшения ставятся на любую поверхность (в том числе на рельсы) и привязываются к сетке в 1 стад
+	local isDecor = ghostKind == "decor"
+	local gs = isDecor and Decor.GRID or (FM.on and FCFG.GRID or GRID)
+
+	-- точка под курсором: земля (уровень 0) или горизонтальная плоскость нужной высоты
+	local pos
+	if level == 0 then
+		-- на земле: луч до поверхности
+		local filter = { ghost }
+		if not isDecor then
+			table.insert(filter, railsFolder)
+		end
+		if player.Character then
+			table.insert(filter, player.Character)
+		end
+		rayParams.FilterDescendantsInstances = filter
+		local hit = workspace:Raycast(ray.Origin, ray.Direction * 600, rayParams)
+		if hit then
+			if not hit.Instance:IsDescendantOf(railsFolder) then
+				refY = hit.Position.Y
+			end
+			local hy = isDecor and hit.Position.Y or (hit.Position.Y + BASE_HEIGHT / 2)
+			pos = Vector3.new(math.round(hit.Position.X / gs) * gs, hy, math.round(hit.Position.Z / gs) * gs)
+		end
+	else
+		-- в воздухе: луч до горизонтальной плоскости нужной высоты
+		-- (украшение стоит на верхней грани рельсы этого уровня)
+		local py = refY + (isDecor and BASE_HEIGHT or BASE_HEIGHT / 2) + level * FM.levelStep()
+		local dy = ray.Direction.Y
+		if math.abs(dy) > 1e-4 then
+			local t = (py - ray.Origin.Y) / dy
+			if t > 0 and t < 400 then
+				local h = ray.Origin + ray.Direction * t
+				pos = Vector3.new(math.round(h.X / gs) * gs, py, math.round(h.Z / gs) * gs)
+			end
+		end
+	end
+
+	local tcf, valid, snapEp
+	if isDecor then
+		-- украшение: только поворот вокруг вертикали
+		if pos then
+			tcf = CFrame.new(pos) * CFrame.Angles(0, math.rad(rotTarget), 0)
+			valid = railCount < MAX_RAILS
+		end
+	elseif FM.on then
+		-- магнит: прилипаем к ближайшему свободному концу другой рельсы
+		if FM.magnet and ghostKind ~= "sign" then
+			snapEp = Geo.findMagnet(ray)
+		end
+		if snapEp then
+			tcf = Geo.attachCF(ghostKind, snapEp)
+		elseif pos then
+			tcf = CFrame.new(pos) * Geo.oriCF(rotTarget, FM.pitch, FM.roll)
+		end
+		valid = tcf ~= nil and railCount < MAX_RAILS and not Geo.isDuplicate(ghostKind, tcf)
+	elseif pos then
+		-- обычный режим: рельса всегда стоит строго ровно — только поворот вокруг вертикали на 0 / 90 / 180 / 270
+		tcf = CFrame.new(pos) * CFrame.Angles(0, math.rad(FM.flatYaw(rotTarget)), 0)
+		valid = (railCount < MAX_RAILS) and not tileAt[cellKey(pos.X, pos.Z)]
+	end
+
+	-- призрак «прилип» или «отлип» — обновляем подписи кнопок
+	local snapped = snapEp ~= nil
+	if snapped ~= FM.snapped then
+		FM.snapped = snapped
+		refreshFreeButtons()
+	end
+
+	if not tcf then
+		ghost.Parent = nil
+		ghostCF, ghostShown = nil, nil
+		FUI.mark.Parent = nil
+		return
+	end
+
+	ghostCF = tcf
+	ghostValid = valid
+
+	-- призрак плавно догоняет цель (и по положению, и по повороту)
+	ghostShown = ghostShown and ghostShown:Lerp(tcf, 1 - math.exp(-dt * 20)) or tcf
+	local bob = 0.1 + math.sin(os.clock() * 4) * 0.06
+	ghost.Parent = camera
+	ghost:PivotTo(CFrame.new(0, bob, 0) * ghostShown)
+
+	ghostHL.FillColor = (not ghostValid) and C.bad or (snapped and C.accent or C.good)
+	ghostHL.FillTransparency = 0.5 + math.sin(os.clock() * 6) * 0.15
+
+	-- светящийся шарик на конце рельсы, к которому прилип призрак
+	if snapEp then
+		local sz = 1.1 + math.sin(os.clock() * 8) * 0.15
+		FUI.mark.Size = Vector3.new(sz, sz, sz)
+		FUI.mark.Position = snapEp.pos + snapEp.up * 0.7
+		FUI.mark.Parent = camera
+	else
+		FUI.mark.Parent = nil
+	end
+end
+
+local function updateHover()
+	local rail
+	local ray = getRay()
+	if ray then
+		local hit = workspace:Raycast(ray.Origin, ray.Direction * 600, hoverParams)
+		if hit then
+			local m = hit.Instance:FindFirstAncestorOfClass("Model")
+			if m and m.Parent == railsFolder then
+				rail = m
+			end
+		end
+	end
+	-- «Текст» работает только с табличками, «Вагонетка» — только с рельсами (не с табличками и украшениями)
+	if rail then
+		local kind = rail:GetAttribute("Kind")
+		local isSign = kind == "sign"
+		if (tool == "edit" and not isSign) or (tool == "cart" and (isSign or kind == "decor")) then
+			rail = nil
+		end
+	end
+	if rail ~= hoverRail then
+		hoverRail = rail
+		hoverHL.Parent = rail
+	end
+	hoverHL.FillColor = (tool == "erase") and C.bad or ((tool == "edit") and C.good or C.warn)
+	hoverHL.FillTransparency = 0.4 + math.sin(os.clock() * 8) * 0.15
+end
+
+local function onRailsChanged()
+	if slotsOpen then
+		refreshSlots()
+	end
+end
+
+local function doAction(fromHold)
+	if not buildMode or busy then
+		return
+	end
+	if tool == "erase" then
+		if not hoverRail then
+			return
+		end
+		local r = hoverRail
+		hoverRail = nil
+		hoverHL.Parent = nil
+		removeRail(r)
+		markDirty()
+		onRailsChanged()
+	elseif tool == "cart" then
+		if fromHold or not hoverRail then
+			return
+		end
+		spawnCart(hoverRail)
+	elseif tool == "edit" then
+		if fromHold or not hoverRail then
+			return
+		end
+		setSignText(hoverRail, finalSignText(signText))
+		flashRail(hoverRail, C.warn)
+		markDirty()
+		toast("✏️ Текст таблички обновлён", C.good)
+	else
+		if fromHold and (tool == "sign" or FM.on) then
+			return
+		end
+		if railCount >= MAX_RAILS then
+			if os.clock() - lastLimitToast > 2 then
+				lastLimitToast = os.clock()
+				toast("Лимит объектов в слоте: " .. MAX_RAILS, C.bad)
+			end
+			return
+		end
+		if not ghostCF or not ghostValid then
+			return
+		end
+		local txt = finalSignText(signText)
+		if tool == "decor" then
+			-- украшение: положение и поворот берём из призрака, наклона и крена нет
+			local x, y, z, yaw = Geo.decompose(ghostCF)
+			spawnPiece("decor", round2(x), round2(y), round2(z), round2(yaw), 0, 0, true, true, nil, Decor.key)
+		elseif FM.on then
+			-- свободная рельса: положение и углы берём прямо из призрака
+			local x, y, z, yaw, pitch, roll = Geo.decompose(ghostCF)
+			spawnPiece(tool, round2(x), round2(y), round2(z), round2(yaw), round2(pitch), round2(roll), true, true, txt, nil, Shop.railSkin(tool))
+		else
+			-- обычная рельса: наклон и крен всегда 0, поворот — только 0 / 90 / 180 / 270
+			local p = ghostCF.Position
+			spawnPiece(tool, p.X, round2(p.Y), p.Z, FM.flatYaw(rotTarget), 0, 0, false, true, txt, nil, Shop.railSkin(tool))
+		end
+		Shop.onPlaced(tool) -- квесты: сколько рельс поставлено, есть ли дом
+		ghostValid = false
+		markDirty()
+		onRailsChanged()
+	end
+end
+
+-- поворот вокруг вертикали: у украшений по 15°, в обычном режиме по 90°, в свободном — на выбранный шаг
+local function rotate(dir)
+	if tool == "decor" then
+		rotTarget += Decor.turnStep() * dir
+	elseif not FM.on then
+		rotTarget += 90 * dir
+	elseif FM.snapped then
+		FM.rel.yaw = FM.wrap(FM.rel.yaw + FM.stepAngle() * dir)
+	else
+		rotTarget += FM.stepAngle() * dir
+	end
+end
+
+-- наклон (pitch) и крен (roll): «в воздухе» — относительно мира, у прилипшего призрака — относительно конца рельсы
+function FM.tilt(which, dir)
+	if not FM.on or tool == "decor" then
+		return
+	end
+	local o = FM.snapped and FM.rel or FM
+	o[which] = FM.wrap(o[which] + FM.stepAngle() * dir)
+	refreshFreeButtons()
+end
+
+function FM.toggleMagnet()
+	FM.magnet = not FM.magnet
+	refreshFreeButtons()
+	toast(FM.magnet and "🧲 Магнит включён" or "🧲 Магнит выключен", FM.magnet and C.good or C.sub)
+end
+
+function FM.cycleStep()
+	FM.angle = FM.angle % #FCFG.ANGLES + 1
+	refreshFreeButtons()
+end
+
+local function setLevel(n)
+	n = math.clamp(n, 0, FM.on and FCFG.MAX_LEVEL or MAX_LEVEL)
+	if n == level then
+		return
+	end
+	level = n
+	hLabel.Text = tostring(level)
+end
+
+local function sampleRefY()
+	local char = player.Character
+	local rootPart = char and char:FindFirstChild("HumanoidRootPart")
+	if not rootPart then
+		return
+	end
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = { char, railsFolder }
+	local hit = workspace:Raycast(rootPart.Position, Vector3.new(0, -60, 0), params)
+	if hit then
+		refY = hit.Position.Y
+	end
+end
+
+local function setTool(t)
+	if t == "loop" and not FM.on then
+		t = "straight" -- петля есть только в свободном режиме
+	end
+	tool = t
+	hoverRail = nil
+	hoverHL.Parent = nil
+	holding = false
+	for name, b in pairs(toolBtns) do
+		setActive(b, name == t)
+	end
+	local placing = isPlacing(t)
+	rotateBtn.Visible = placing
+	hpanel.Visible = placing
+	signPanel.Visible = (t == "sign" or t == "edit")
+	for _, b in ipairs(FUI.only) do
+		b.Visible = placing and t ~= "decor" -- наклон, крен, магнит и т.д. — только для рельс
+	end
+	if placing then
+		if ghostKind ~= t or (t == "decor" and Decor.ghostKey ~= Decor.key) then
+			createGhost(t)
+		end
+	else
+		destroyGhost()
+	end
+	local act = ACTIONS[t]
+	actionIcon.Text = act[1]
+	actionLbl.Text = act[2]
+	Decor.placeImg.Visible = act[3] == true -- для «Поставить» вместо значка показываем картинку
+	actionIcon.Visible = act[3] ~= true
+	hint.Text = hintFor(t)
+end
+
+-- переключатель «Свободный режим»
+local function setFreeMode(on)
+	if on == FM.on then
+		return
+	end
+	local oldStep = FM.levelStep()
+	FM.on = on
+	-- высота хранится в «шагах»: переводим в новые шаги, чтобы рельса осталась на той же высоте
+	level = math.clamp(math.round(level * oldStep / FM.levelStep()), 0, on and FCFG.MAX_LEVEL or MAX_LEVEL)
+	hLabel.Text = tostring(level)
+	-- сбрасываем всё «свободное»: наклон, крен, углы стыка, сторону, прилипание.
+	-- Иначе после выключения режима рельсы могли остаться повёрнутыми не по сетке.
+	FM.resetAngles()
+	if not on then
+		rotTarget = FM.flatYaw(rotTarget) -- обычный режим знает только прямые углы
+	end
+	-- старый призрак выбрасываем и строим заново, чтобы он не тащил за собой старый поворот
+	destroyGhost()
+	ghostValid = false
+	FUI.refreshSwitch(true)
+	refreshFreeButtons()
+	FUI.dock.Visible = buildMode and on and not Decor.open
+	layoutBottom()
+	if buildMode then
+		setTool(tool)
+	end
+	toast(on and "🔓 Свободный режим: рельсы без правил" or "🔒 Обычный режим: рельсы по сетке", on and C.good or C.sub)
+end
+-- ===== Панель украшений: открыть / закрыть / выбрать =====
+-- когда панель открыта, обычная нижняя панель (и переключатель свободного режима) скрыты
+function Decor.setOpen(on)
+	if on == Decor.open then
+		return
+	end
+	Decor.open = on
+	dock.Visible = not on
+	Decor.dock.Visible = on
+	if on then
+		setSlotsOpen(false)
+		if Home.ui and Home.ui.isOpen then
+			Home.ui.setOpen(false)
+		end
+		Decor.dock.Position = UDim2.new(0.5, 0, 1, 140)
+		tween(Decor.dock, 0.4, { Position = UDim2.new(0.5, 0, 1, -14) }, Enum.EasingStyle.Back)
+		FUI.card.Visible = false
+		FUI.dock.Visible = false
+		Decor.select(Decor.key) -- подсвечивает выбранную карточку и включает инструмент «украшение»
+	else
+		dock.Position = UDim2.new(0.5, 0, 1, 90)
+		tween(dock, 0.4, { Position = UDim2.new(0.5, 0, 1, -14) }, Enum.EasingStyle.Back)
+		FUI.card.Visible = buildMode
+		FUI.dock.Visible = buildMode and FM.on
+		if tool == "decor" then
+			setTool("straight")
+		end
+	end
+	layoutBottom()
+end
+
+function Decor.select(key)
+	Decor.key = key
+	if Decor.turnStep() == 90 then
+		rotTarget = FM.flatYaw(rotTarget) -- стены и двери ставятся строго по прямым углам
+	end
+	for k, b in pairs(Decor.cards) do
+		setActive(b, k == key, C.accentDark)
+	end
+	if Decor.open then
+		setTool("decor") -- если украшение другое, призрак пересоздастся
+	end
+end
+
+local function setBuildMode(on)
+	if on and Home.rec then
+		toast("Сначала сохрани или отмени запись маршрута", C.warn)
+		return
+	end
+	if not on then
+		Decor.setOpen(false) -- выходим из строительства — возвращаем обычную панель
+	end
+	buildMode = on
+	Home.setBuild(on) -- в режиме строительства кнопки дверей отключены
+	Home.refreshNpcBtn() -- и кнопка «НПС» тоже прячется
+	Shop.refreshButtons() -- «Магазин» и «Квесты» тоже
+	allHL.Enabled = on
+	tools.Visible = on
+	divider.Visible = on
+	hint.Visible = on
+	FUI.dock.Visible = on and FM.on
+	if on then
+		FUI.card.Position = UDim2.fromOffset(-250, 10)
+		FUI.card.Visible = true
+		tween(FUI.card, 0.4, { Position = UDim2.fromOffset(14, 10) }, Enum.EasingStyle.Back)
+	else
+		FUI.card.Visible = false
+	end
+	layoutBottom()
+	buildIcon.Text = ""
+	buildLbl.Text = on and "Выйти" or "Строить"
+	setBase(buildBtn, on and C.badDark or C.goodDark)
+	if on then
+		sampleRefY()
+		setTool(tool)
+	else
+		holding = false
+		hoverRail = nil
+		hoverHL.Parent = nil
+		hpanel.Visible = false
+		signPanel.Visible = false
+		destroyGhost()
+	end
+end
+
+buildBtn.Activated:Connect(function()
+	setBuildMode(not buildMode)
+end)
+for name, b in pairs(toolBtns) do
+	b.Activated:Connect(function()
+		setTool(name)
+	end)
+end
+rotateBtn.Activated:Connect(function()
+	rotate(1)
+end)
+actionBtn.Activated:Connect(function()
+	doAction(false)
+end)
+hUp.Activated:Connect(function()
+	setLevel(level + 1)
+end)
+hDown.Activated:Connect(function()
+	setLevel(level - 1)
+end)
+hReset.Activated:Connect(function()
+	setLevel(0)
+end)
+
+-- кнопки свободного режима
+FUI.track.Activated:Connect(function()
+	setFreeMode(not FM.on)
+end)
+FUI.pitch.Activated:Connect(function()
+	FM.tilt("pitch", 1)
+end)
+FUI.roll.Activated:Connect(function()
+	FM.tilt("roll", 1)
+end)
+FUI.side.Activated:Connect(function()
+	FM.flip = not FM.flip
+	refreshFreeButtons()
+end)
+FUI.magnet.Activated:Connect(function()
+	FM.toggleMagnet()
+end)
+FUI.step.Activated:Connect(function()
+	FM.cycleStep()
+end)
+
+-- кнопки украшений
+Decor.btn.Activated:Connect(function()
+	if buildMode then
+		Decor.setOpen(true)
+	end
+end)
+Decor.backBtn.Activated:Connect(function()
+	Decor.setOpen(false)
+end)
+-- стрелки по бокам листают список украшений (примерно на три карточки)
+function Decor.scrollBy(dx)
+	local sf = Decor.scroll
+	tween(sf, 0.25, { CanvasPosition = Vector2.new(math.max(0, sf.CanvasPosition.X + dx), 0) })
+end
+Decor.prevBtn.Activated:Connect(function()
+	Decor.scrollBy(-282)
+end)
+Decor.nextBtn.Activated:Connect(function()
+	Decor.scrollBy(282)
+end)
+Decor.rotateBtn.Activated:Connect(function()
+	rotate(1)
+end)
+Decor.actionBtn.Activated:Connect(function()
+	doAction(false)
+end)
+for key, card in pairs(Decor.cards) do
+	card.Activated:Connect(function()
+		Decor.select(key)
+	end)
+end
+
+-- ===== НПС: раздел «Обучение» =====
+Home.npcBtn.Activated:Connect(function()
+	Home.ui.setOpen(not Home.ui.isOpen)
+end)
+Home.ui.closeBtn.Activated:Connect(function()
+	Home.ui.setOpen(false)
+end)
+Home.ui.backdrop.Activated:Connect(function()
+	Home.ui.setOpen(false)
+end)
+for i, c in ipairs(Home.ui.cards) do
+	c.rec.Activated:Connect(function() -- «Запомнить»: начать запись маршрута
+		if Home.rec then
+			toast("Сначала сохрани или отмени текущую запись", C.warn)
+			return
+		end
+		Home.ui.setOpen(false)
+		if buildMode then
+			setBuildMode(false)
+		end
+		Home.startRecord(i)
+	end)
+	c.play.Activated:Connect(function() -- «Отправить»: жители идут по маршруту
+		Home.sendRoute(i)
+	end)
+	c.trash.Activated:Connect(function() -- «Очистить» (нужно нажать дважды)
+		if (Home.rec and Home.rec.slot == i) or #Home.routes[i].pts == 0 then
+			return
+		end
+		if not c.armed then
+			c.armed = true
+			Home.ui.refresh()
+			toast("Нажми ещё раз: маршрут " .. i .. " будет очищен", C.warn)
+			task.delay(2.5, function()
+				if c.armed then
+					c.armed = false
+					Home.ui.refresh()
+				end
+			end)
+			return
+		end
+		c.armed = false
+		Home.routes[i] = { name = "Маршрут " .. i, pts = {} }
+		Home.ui.refresh()
+		markDirty()
+		toast("Маршрут " .. i .. " очищен", C.bad)
+	end)
+end
+Home.ui.recSave.Activated:Connect(function() -- «Сохранить» записанный маршрут
+	if Home.stopRecord(true) then
+		markDirty()
+	end
+end)
+Home.ui.recCancel.Activated:Connect(function() -- «Отмена»: не сохранять
+	Home.stopRecord(false)
+	toast("Запись отменена", C.sub)
+end)
+
+-- ===== Ввод =====
+local TOOL_KEYS = {
+	[Enum.KeyCode.One] = "straight",
+	[Enum.KeyCode.Two] = "curve",
+	[Enum.KeyCode.Three] = "ramp",
+	[Enum.KeyCode.Four] = "erase",
+	[Enum.KeyCode.Five] = "cart",
+	[Enum.KeyCode.Six] = "sign",
+	[Enum.KeyCode.Seven] = "edit",
+	[Enum.KeyCode.Eight] = "loop",
+}
+
+UserInputService.LastInputTypeChanged:Connect(function(t)
+	lastInputTouch = (t == Enum.UserInputType.Touch)
+end)
+
+UserInputService.InputBegan:Connect(function(input, processed)
+	if processed then
+		return
+	end
+	local t = input.UserInputType
+	local back = UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) and -1 or 1
+	if t == Enum.UserInputType.Touch then
+		touchPos = input.Position -- на телефоне тап двигает призрак, ставим кнопкой в панели
+	elseif t == Enum.UserInputType.MouseButton1 then
+		if buildMode then
+			holding = isHoldTool(tool)
+			doAction(false)
+		end
+	elseif input.KeyCode == Enum.KeyCode.R then
+		if buildMode and isPlacing(tool) then
+			rotate(back)
+		end
+	elseif input.KeyCode == Enum.KeyCode.T then
+		if buildMode and Decor.railTool(tool) then
+			FM.tilt("pitch", back)
+		end
+	elseif input.KeyCode == Enum.KeyCode.Y then
+		if buildMode and Decor.railTool(tool) then
+			FM.tilt("roll", back)
+		end
+	elseif input.KeyCode == Enum.KeyCode.V then
+		if buildMode and FM.on and Decor.railTool(tool) then
+			FM.flip = not FM.flip
+			refreshFreeButtons()
+		end
+	elseif input.KeyCode == Enum.KeyCode.M then
+		if buildMode and FM.on and not Decor.open then
+			FM.toggleMagnet()
+		end
+	elseif input.KeyCode == Enum.KeyCode.N then
+		if buildMode and FM.on and not Decor.open then
+			FM.cycleStep()
+		end
+	elseif input.KeyCode == Enum.KeyCode.F then
+		if buildMode and not Decor.open then
+			setFreeMode(not FM.on)
+		end
+	elseif input.KeyCode == Enum.KeyCode.E then
+		if buildMode and isPlacing(tool) then
+			setLevel(level + 1)
+		end
+	elseif input.KeyCode == Enum.KeyCode.Q then
+		if buildMode and isPlacing(tool) then
+			setLevel(level - 1)
+		end
+	elseif input.KeyCode == Enum.KeyCode.G then
+		if buildMode and isPlacing(tool) then
+			setLevel(0)
+		end
+	elseif input.KeyCode == Enum.KeyCode.B then
+		if data and Loading.uiReady then -- пока идут загрузка и появление панелей, строить нельзя
+			setBuildMode(not buildMode)
+		end
+	elseif input.KeyCode == Enum.KeyCode.Nine then
+		if buildMode then
+			Decor.setOpen(not Decor.open)
+		end
+	elseif TOOL_KEYS[input.KeyCode] and buildMode then
+		local name = TOOL_KEYS[input.KeyCode]
+		if name ~= "loop" or FM.on then
+			if Decor.open then
+				Decor.setOpen(false) -- выбрал другой инструмент — панель украшений закрываем
+			end
+			setTool(name)
+		end
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		holding = false
+	end
+end)
+
+UserInputService.JumpRequest:Connect(function()
+	if cart and cart.riding then
+		setRiding(false)
+	end
+end)
+
+player.CharacterRemoving:Connect(function()
+	if cart and cart.riding then
+		cart.riding = false
+		refreshCartHud()
+	end
+end)
+
+RunService.RenderStepped:Connect(function(dt)
+	if Home.needSave then
+		Home.needSave = false
+		markDirty() -- маршрут сохранился сам (дошёл до предельной длины)
+	end
+	if Decor.open then
+		Decor.spin(dt) -- модели в карточках крутятся
+	end
+	if buildMode then
+		if tool == "erase" or tool == "cart" or tool == "edit" then
+			updateHover()
+		elseif ghost then
+			updateGhost(dt)
+		end
+		if holding then
+			doAction(true)
+		end
+	end
+	stepCart(dt)
+	FX.update(dt)
+	Skins.update(dt) -- анимации скинов (радуга, пульс, глич, ТНТ…)
+	Shop.spin(dt) -- крутятся модели в окнах
+	Shop.ui.tick(dt)
+end)
+
+-- ===== Старт: загрузка сохранения из файла =====
+-- Всё грузится, пока идёт экран загрузки; панели появляются, когда он закончился.
+task.spawn(function()
+	ensureDir()
+	local raw = readJSON(BUILD_FILE)
+
+	data = normalize(raw)
+	saveState = isfolder(SAVE_DIR) and "saved" or "off"
+	buildSlotCards()
+	refreshSlots()
+
+	loadRails(data.slots[data.active].rails)
+	busy = false
+	refreshSlots()
+
+	-- ждём конец экрана загрузки
+	while not Loading.done do
+		task.wait(0.1)
+	end
+
+	-- 1) карточка игрока падает сверху: аватарка скина, ник и регион
+	Profile.drop()
+	task.wait(0.3)
+
+	-- 2) появляются панели; карточка остаётся перед ними (она выше по слоям)
+	pill.Position = UDim2.new(0.5, 0, 0, -70)
+	pill.Visible = true
+	tween(pill, 0.5, { Position = UDim2.new(0.5, 0, 0, 10) }, Enum.EasingStyle.Back)
+	dock.Position = UDim2.new(0.5, 0, 1, 90)
+	dock.Visible = true
+	tween(dock, 0.5, { Position = UDim2.new(0.5, 0, 1, -14) }, Enum.EasingStyle.Back)
+	Loading.uiReady = true
+
+	-- 3) карточка висит ещё немного, потом уезжает в угол
+	task.wait(Profile.HOLD)
+	Profile.settle()
+end)
+
+-- экономика: загружаем монеты, скины, квесты из файла RailBuilder/economy.json
+task.spawn(Shop.load)
