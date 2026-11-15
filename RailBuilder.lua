@@ -18,15 +18,42 @@ local HttpService = game:GetService("HttpService")
 local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
--- ===== Файловое сохранение =====
+-- ===== Файловое сохранение (безопасная версия) =====
 local SAVE_DIR = "RailBuilder"
 local BUILD_FILE = SAVE_DIR .. "/build.json"
 local ECON_FILE = SAVE_DIR .. "/economy.json"
 
+local HAS_FILE_IO = type(writefile) == "function" and type(readfile) == "function" and type(isfile) == "function" and type(isfolder) == "function" and type(makefolder) == "function"
+
+if not HAS_FILE_IO then
+    warn("⚠ [RailBuilder] Твой executor не поддерживает файлы (isfile, writefile и т.д.). Сохранение ОТКЛЮЧЕНО.")
+end
+
 local function ensureDir()
+    if not HAS_FILE_IO then return end
     if not isfolder(SAVE_DIR) then
-        makefolder(SAVE_DIR)
+        pcall(makefolder, SAVE_DIR)
     end
+end
+
+local function writeJSON(path, tbl)
+    if not HAS_FILE_IO then return false, "no file io" end
+    ensureDir()
+    local ok, encoded = pcall(function() return HttpService:JSONEncode(tbl) end)
+    if not ok then return false, encoded end
+    local ok2, err = pcall(writefile, path, encoded)
+    if not ok2 then return false, err end
+    return true
+end
+
+local function readJSON(path)
+    if not HAS_FILE_IO then return nil end
+    if not isfile(path) then return nil end
+    local ok, content = pcall(readfile, path)
+    if not ok or not content or content == "" then return nil end
+    local ok2, decoded = pcall(function() return HttpService:JSONDecode(content) end)
+    if not ok2 or type(decoded) ~= "table" then return nil end
+    return decoded
 end
 
 local function writeJSON(path, tbl)
