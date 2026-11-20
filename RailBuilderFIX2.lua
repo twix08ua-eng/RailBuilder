@@ -58,7 +58,7 @@ end
 	return decoded
 end
 
- local player = Players. localPlayer
+ local player = Players.localPlayer  -- player == nil
  local camera = workspace.CurrentCamera
 
 -- ===== Настройки =====
